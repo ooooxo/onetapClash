@@ -1,0 +1,54 @@
+# 由 install.sh 用 envsubst 从本模板生成。统一 ${DOMAIN} 的 :80 server:
+#   面板 + 面板→s-ui/converter 同源反代 + 用户订阅(地址不变)。
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DOMAIN};
+
+    # ── 面板静态(公开无妨:纯前端;操作 s-ui 仍需 s-ui 登录=唯一登录)──────
+    location ${PANEL_PATH} {
+        alias ${PANEL_DIR}/;
+        try_files $uri $uri/ ${PANEL_PATH}index.html;
+    }
+    # 面板 → s-ui API(cookie 同源;把会话 cookie 收到 ${PANEL_PATH} 下,覆盖 api 与 conv)
+    location ${PANEL_PATH}api/ {
+        proxy_pass http://${SUI_ADDR}${SUI_BASE}api/;
+        proxy_set_header Host ${DOMAIN};
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_cookie_path ${SUI_BASE} ${PANEL_PATH};
+        proxy_cookie_path / ${PANEL_PATH};
+    }
+    # converter admin:用 s-ui 会话鉴权(auth_request 到 onlines),无需第二套登录
+    location = ${PANEL_PATH}_authcheck {
+        internal;
+        proxy_pass http://${SUI_ADDR}${SUI_BASE}api/onlines;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Host ${DOMAIN};
+        proxy_set_header Cookie $http_cookie;
+    }
+    location ${PANEL_PATH}conv/ {
+        auth_request ${PANEL_PATH}_authcheck;
+        proxy_pass http://${CONV_ADDR}/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Admin-Secret "${CONV_ADMIN_SECRET}";
+    }
+
+    # ── 用户订阅入口(converter,地址不变)────────────────────────────────
+    location /get/ {
+        proxy_pass http://${CONV_ADDR};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_pass_header Subscription-Userinfo;
+        add_header Access-Control-Allow-Origin *;
+        add_header Access-Control-Expose-Headers Subscription-Userinfo;
+    }
+    # converter admin 直连(仅本地/白名单;公网建议只留 /panel/conv/ 走)
+    location /admin/ {
+        allow 127.0.0.1; deny all;
+        proxy_pass http://${CONV_ADDR};
+        proxy_set_header X-Admin-Secret $http_x_admin_secret;
+    }
+
+    location / { return 200 "OK"; add_header Content-Type text/plain; }
+}

@@ -1,0 +1,21 @@
+[Unit]
+Description=onetapclash 壳层 (sui-converter) — s-ui 订阅分流
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${CONV_DIR}
+Environment=ADMIN_SECRET=${CONV_ADMIN_SECRET}
+Environment=RULES_FILE=${CONV_DIR}/rules.json
+ExecStart=${CONV_DIR}/venv/bin/python ${CONV_DIR}/converter.py
+Restart=always
+RestartSec=3
+# 收紧权限
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=${CONV_DIR}
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
