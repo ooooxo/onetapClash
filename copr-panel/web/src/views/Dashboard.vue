@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, ref, reactive, onMounted, onUnmounted } from 'vue'
 import { store } from '../store'
-import { getStats } from '../api/client'
+import { loadData } from '../api/client'
 import Icon from '../components/Icon.vue'
 
 const total = computed(() => store.members.reduce((a, m) => a + m.gb, 0))
@@ -15,46 +15,51 @@ const stats = computed(() => [
 ])
 const onlineMembers = computed(() => [...store.members].filter(m => m.on).sort((a, b) => b.gb - a.gb))
 const nodeActive = (n: { name: string }) => store.onlineInbounds.includes(n.name)
-const nodeIcon = (p: string) => /hysteria|tuic/i.test(p) ? 'bolt' : 'shield'
 
-interface NS { spark: number[]; peak: number; up: number; down: number; loaded: boolean }
-const nodeStats = reactive<Record<string, NS>>({})
+// ── 实时吞吐:轮询累计流量差值(btop 同理,真数据)──────────────────────────
+const hist = reactive<{ up: number; down: number }[]>([])
+const curUp = ref(0), curDown = ref(0)
+const peak = computed(() => hist.length ? Math.max(...hist.map(s => s.up + s.down)) : 0)
+let prevUp = 0, prevDown = 0, prevT = 0, timer = 0
+const N = 40
 
-function fmtB(b: number) {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB'
-  if (b >= 1e6) return (b / 1e6).toFixed(0) + ' MB'
-  if (b >= 1e3) return (b / 1e3).toFixed(0) + ' KB'
-  return b + ' B'
-}
-function sparkPath(vals: number[]) {
-  if (vals.length < 2) return ''
-  const mn = Math.min(...vals), mx2 = Math.max(...vals), rng = Math.max(1, mx2 - mn)
-  const n = vals.length
-  return 'M' + vals.map((v, i) => `${(i / (n - 1) * 100).toFixed(1)} ${(30 - (v - mn) / rng * 26).toFixed(1)}`).join(' L ')
-}
+function fmtR(m: number) { return m >= 1 ? m.toFixed(1) + ' Mbps' : (m * 1000).toFixed(0) + ' Kbps' }
+const totVals = computed(() => hist.map(s => s.up + s.down))
+const linePath = computed(() => {
+  const v = totVals.value; if (v.length < 2) return ''
+  const mxv = Math.max(0.01, ...v)
+  return 'M' + v.map((x, i) => `${(i / (v.length - 1) * 100).toFixed(1)} ${(56 - x / mxv * 50).toFixed(1)}`).join(' L ')
+})
+const areaPath = computed(() => linePath.value ? `${linePath.value} L 100 60 L 0 60 Z` : '')
 
-async function fetchNodeStats() {
-  if (!store.live) return
-  for (const n of store.nodes) {
-    try {
-      const r: any = await getStats('inbound', n.name)
-      const rows: any[] = r?.obj || []
-      const buckets: Record<number, { up: number; down: number }> = {}
-      for (const e of rows) {
-        const t = e.dateTime
-        if (!buckets[t]) buckets[t] = { up: 0, down: 0 }
-        if (e.direction) buckets[t].up += e.traffic; else buckets[t].down += e.traffic
-      }
-      const ts = Object.keys(buckets).map(Number).sort((a, b) => a - b)
-      const spark = ts.map(t => buckets[t].up + buckets[t].down)
-      const up = ts.reduce((s, t) => s + buckets[t].up, 0)
-      const down = ts.reduce((s, t) => s + buckets[t].down, 0)
-      nodeStats[n.name] = { spark, peak: spark.length ? Math.max(...spark) : 0, up, down, loaded: true }
-    } catch { nodeStats[n.name] = { spark: [], peak: 0, up: 0, down: 0, loaded: true } }
-  }
+async function poll() {
+  try {
+    const r: any = await loadData()
+    const o = r?.obj ?? r
+    const clients: any[] = o?.clients ?? []
+    if (Array.isArray(clients) && clients.length) {
+      store.members = clients.map((c: any) => ({
+        id: c.id, name: c.name, gb: Math.round(((+c.up || 0) + (+c.down || 0)) / 1e9),
+        on: (o?.onlines?.user ?? []).includes(c.name),
+        exp: c.expiry > 0 ? new Date((+c.expiry > 1e12 ? +c.expiry : +c.expiry * 1000)).toISOString().slice(0, 10) : '长期',
+      }))
+    }
+    store.onlineInbounds = o?.onlines?.inbound ?? []
+    const tu = clients.reduce((s, c) => s + (+c.up || 0), 0)
+    const td = clients.reduce((s, c) => s + (+c.down || 0), 0)
+    const now = performance.now() / 1000
+    if (prevT) {
+      const dt = Math.max(0.5, now - prevT)
+      curUp.value = Math.max(0, (tu - prevUp) * 8 / 1e6 / dt)
+      curDown.value = Math.max(0, (td - prevDown) * 8 / 1e6 / dt)
+      hist.push({ up: curUp.value, down: curDown.value })
+      while (hist.length > N) hist.shift()
+    }
+    prevUp = tu; prevDown = td; prevT = now
+  } catch { /* keep last */ }
 }
-// 真节点名到位(load 完成)就抓流量;避免挂载时还是 mock 名导致查空
-watch(() => store.live + '|' + store.nodes.map(n => n.name).join('|'), fetchNodeStats, { immediate: true })
+onMounted(() => { if (store.live) { poll(); timer = window.setInterval(poll, 3000) } })
+onUnmounted(() => clearInterval(timer))
 </script>
 
 <template>
@@ -67,23 +72,22 @@ watch(() => store.live + '|' + store.nodes.map(n => n.name).join('|'), fetchNode
   </div>
   <div class="grid g2">
     <div class="panel">
-      <div class="sect"><h3>节点流量</h3><div class="sp" /><span class="chip" :class="store.live ? 'on' : 'gray'">{{ store.live ? '实时' : '演示' }}</span></div>
-      <div v-for="n in store.nodes" :key="n.name" class="pnode">
-        <div class="ph">
-          <span class="dot" :class="{ on: nodeActive(n) }" />
-          <div class="ti2"><Icon :name="nodeIcon(n.proto)" :size="15" /></div>
-          <b>{{ n.name }}</b><span class="chip gray">{{ n.net }}</span>
-          <div class="sp" />
-          <span class="chip" :class="nodeActive(n) ? 'on' : 'gray'">{{ nodeActive(n) ? '活跃' : '空闲' }}</span>
-        </div>
-        <svg v-if="nodeStats[n.name]?.spark.length >= 2" class="spark" viewBox="0 0 100 32" preserveAspectRatio="none" role="img" aria-label="流量趋势">
-          <path :d="sparkPath(nodeStats[n.name].spark)" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-        <div v-else class="spark-empty">{{ store.live ? '暂无足够流量样本' : '演示模式无数据' }}</div>
-        <div class="pf">
-          <span>峰值 <b>{{ fmtB(nodeStats[n.name]?.peak || 0) }}</b></span>
-          <span>↑ <b>{{ fmtB(nodeStats[n.name]?.up || 0) }}</b> · ↓ <b>{{ fmtB(nodeStats[n.name]?.down || 0) }}</b></span>
-        </div>
+      <div class="sect"><h3>实时吞吐</h3><div class="sp" /><span class="chip" :class="store.live ? 'on' : 'gray'">{{ store.live ? '每 3s' : '演示' }}</span></div>
+      <div class="rrow">
+        <div class="rc"><span class="rl">↑ 上行</span><b class="rv">{{ fmtR(curUp) }}</b></div>
+        <div class="rc"><span class="rl">↓ 下行</span><b class="rv">{{ fmtR(curDown) }}</b></div>
+        <div class="rc"><span class="rl">峰值</span><b class="rv mut">{{ fmtR(peak) }}</b></div>
+      </div>
+      <svg v-if="totVals.length >= 2" viewBox="0 0 100 60" preserveAspectRatio="none" width="100%" height="120" role="img" aria-label="实时吞吐">
+        <defs><linearGradient id="tg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".28" /><stop offset="1" stop-color="var(--accent)" stop-opacity="0" /></linearGradient></defs>
+        <path :d="areaPath" fill="url(#tg)" />
+        <path :d="linePath" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+      <div v-else class="empty">{{ store.live ? '采样中…(3s 后出曲线)' : '演示模式' }}</div>
+      <div class="nstrip">
+        <span v-for="n in store.nodes" :key="n.name" class="nchip" :class="{ on: nodeActive(n) }">
+          <span class="dot" :class="{ on: nodeActive(n) }" />{{ n.name }} · {{ n.net }}
+        </span>
       </div>
     </div>
 
@@ -97,17 +101,19 @@ watch(() => store.live + '|' + store.nodes.map(n => n.name).join('|'), fetchNode
           <div class="val">{{ m.gb }} GB</div>
         </div>
       </template>
-      <div v-else class="spark-empty" style="padding:20px 0;text-align:center">暂无在线用户</div>
+      <div v-else class="empty" style="padding:20px 0;text-align:center">暂无在线用户</div>
     </div>
   </div>
 </template>
 
 <style scoped>
 .ti2{width:32px;height:32px;border-radius:var(--r-sm);background:var(--inset);display:flex;align-items:center;justify-content:center;color:var(--ink-3);flex:none;font-size:13px;font-weight:700}
-.pnode{padding:12px 2px}.pnode+.pnode{border-top:1px solid var(--hairline)}
-.ph{display:flex;align-items:center;gap:9px;margin-bottom:7px}.ph b{font-size:13px;font-weight:600}.ph .sp{flex:1}
-.spark{width:100%;height:32px;display:block}
-.spark-empty{height:32px;display:flex;align-items:center;font-size:11px;color:var(--ink-4)}
-.pf{display:flex;justify-content:space-between;margin-top:5px;font-size:11px;color:var(--ink-4)}
-.pf b{color:var(--ink-3);font-weight:600;font-variant-numeric:tabular-nums}
+.rrow{display:flex;gap:24px;margin-bottom:12px}
+.rc{display:flex;flex-direction:column;gap:2px}
+.rl{font-size:11px;color:var(--ink-3);font-weight:500}
+.rv{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}.rv.mut{color:var(--ink-3);font-size:16px}
+.empty{height:120px;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--ink-4)}
+.nstrip{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.nchip{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-3);background:var(--inset);padding:4px 9px;border-radius:var(--r-pill)}
+.nchip.on{color:var(--ink-2)}
 </style>
