@@ -96,7 +96,7 @@ def build_clash_config(proxies, userinfo):
         if name == "♻️ 自动选择":
             return {"name": name, "type": "url-test", "url": "http://www.gstatic.com/generate_204",
                     "interval": 180, "tolerance": 100, "proxies": list(auto_order)}
-        if name in ("🎬 看视频", "🤖 AI"):
+        if name == "🎬 看视频":
             return {"name": name, "type": "select", "proxies": ["♻️ 自动选择", "🚀 手动选择", *auto_order]}
         return {"name": name, "type": "select", "proxies": [*auto_order, "DIRECT"]}
 

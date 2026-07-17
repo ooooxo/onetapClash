@@ -12,9 +12,9 @@ interface Provider { key: string; behavior?: string; url: string }
 interface Module { id: string; name: string; policy: string; enabled: boolean; providers: Provider[]; rules: string[] }
 interface RulesCfg { dns?: any; groups?: string[]; final?: string; modules: Module[] }
 
-const POLICIES = ['DIRECT', 'REJECT', '🚀 手动选择', '♻️ 自动选择', '🎬 看视频', '🤖 AI']
+const POLICIES = ['DIRECT', 'REJECT', '🚀 手动选择', '♻️ 自动选择', '🎬 看视频']
 const DEFAULT: RulesCfg = {
-  groups: ['🚀 手动选择', '♻️ 自动选择', '🎬 看视频', '🤖 AI'], final: '🚀 手动选择',
+  groups: ['♻️ 自动选择', '🚀 手动选择', '🎬 看视频'], final: '♻️ 自动选择',
   modules: [
     { id: 'reject', name: '广告拦截', policy: 'REJECT', enabled: true, providers: [{ key: 'ads', url: '' }], rules: [] },
     { id: 'cn', name: '国内直连', policy: 'DIRECT', enabled: true, providers: [{ key: 'cn', url: '' }], rules: ['GEOIP,CN,DIRECT'] },

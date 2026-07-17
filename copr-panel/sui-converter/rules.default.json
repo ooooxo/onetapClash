@@ -1,13 +1,12 @@
 {
   "_comment": "模块化分流 2.1 — 内联 GEOSITE/GEOIP,mihomo 自带数据、零外部下载、国内可用。顺序=优先级。面板可编辑。",
-  "groups": ["♻️ 自动选择", "🚀 手动选择", "🎬 看视频", "🤖 AI"],
+  "groups": ["♻️ 自动选择", "🚀 手动选择", "🎬 看视频"],
   "final": "♻️ 自动选择",
   "modules": [
     { "id": "reject", "name": "广告拦截", "enabled": true, "policy": "REJECT", "geosite": ["category-ads-all"], "geoip": [], "rules": [] },
     { "id": "cn", "name": "国内直连", "enabled": true, "policy": "DIRECT", "geosite": ["cn"], "geoip": ["CN"], "rules": ["DOMAIN-SUFFIX,cn,DIRECT"] },
     { "id": "telegram", "name": "电报", "enabled": true, "policy": "♻️ 自动选择", "geosite": ["telegram"], "geoip": [], "rules": [] },
     { "id": "media", "name": "国际流媒体", "enabled": true, "policy": "🎬 看视频", "geosite": ["youtube", "netflix"], "geoip": [], "rules": [] },
-    { "id": "ai", "name": "AI 服务", "enabled": true, "policy": "🤖 AI", "geosite": ["openai"], "geoip": [], "rules": ["DOMAIN-SUFFIX,anthropic.com,🤖 AI", "DOMAIN-SUFFIX,claude.ai,🤖 AI"] },
     { "id": "custom", "name": "自定义", "enabled": true, "policy": "🚀 手动选择", "geosite": [], "geoip": [], "rules": [] }
   ]
 }
