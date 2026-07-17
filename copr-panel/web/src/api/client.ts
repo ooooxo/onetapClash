@@ -23,7 +23,6 @@ export const login = (user: string, pass: string) =>
 
 // s-ui 全量数据在 /load(不是 getData —— 那是内部函数)。返回 {success,msg,obj:{clients,inbounds,onlines,...}}
 export const loadData = () => req(API, '/load')
-export const getOnlines = () => req(API, '/onlines')
 // 每节点真实流量时序:resource=inbound, tag=节点tag → [{dateTime,direction,traffic}]
 export const getStats = (resource: string, tag: string, start = 0, end = 9999999999, limit = 500) => {
   const q = new URLSearchParams({ resource, tag, start: String(start), end: String(end), limit: String(limit) })
@@ -37,10 +36,7 @@ export const save = (object: string, action: string, data: unknown, initUsers?: 
   return req(API, '/save', { method: 'POST', body: form(body) })
 }
 
-export const restartSb = () => req(API, '/restartSb', { method: 'POST' })
-
-// ---- converter(分流 / 会员订阅映射)----
+// ---- converter(分流规则)----
 export const convRules = () => req(CONV, '/admin/rules')
 export const convSetRules = (rules: unknown) =>
   req(CONV, '/admin/rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rules) })
-export const convUsers = () => req(CONV, '/admin/users')
