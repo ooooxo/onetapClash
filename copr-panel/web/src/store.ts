@@ -46,6 +46,8 @@ export const store = reactive({
   error: '',
   members: MOCK_MEMBERS as Member[],
   nodes: MOCK_NODES as Node[],
+  onlineInbounds: [] as string[],  // 有活跃连接的节点 tag(真数据,来自 onlines）
+  onlineUsers: [] as string[],
   subUrl(name: string) { return `${location.origin}/get/${name}` }, // 跟随面板协议/端口(HTTPS 面板→HTTPS 订阅)
   suiUrl() { return `http://${this.domain}:2020/app/` }, // s-ui 原面板(深水区:开节点/改凭证)
   async load() {
@@ -54,6 +56,8 @@ export const store = reactive({
       const r: any = await loadData()
       const o = r?.obj ?? r
       const onlineUsers: string[] = o?.onlines?.user ?? []
+      this.onlineUsers = onlineUsers
+      this.onlineInbounds = o?.onlines?.inbound ?? []
       if (Array.isArray(o?.clients)) this.members = o.clients.map((c: any) => mapClient(c, onlineUsers))
       if (Array.isArray(o?.inbounds)) this.nodes = o.inbounds.map(mapInbound)
       this.live = true

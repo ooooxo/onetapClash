@@ -81,13 +81,23 @@ def build_clash_config(proxies, userinfo):
             rules.append(r)
     rules.append(f"MATCH,{final}")
 
+    # 自动组优先级:UDP(HY2/TUIC 抗丢包快)> Reality TCP > 普通 TCP
+    def prio(p):
+        if (p.get("type") or "") in ("hysteria2", "hysteria", "tuic"):
+            return 0
+        if p.get("reality-opts"):
+            return 1
+        return 2
+    auto_order = [p["name"] for p in sorted(proxies, key=prio)]
+
     def grp(name):
+        # 自动选择 = fallback:默认用第一个(HY2),不通自动切下一个,用户无需手动
         if name == "♻️ 自动选择":
-            return {"name": name, "type": "url-test", "url": "http://www.gstatic.com/generate_204",
-                    "interval": 300, "tolerance": 50, "proxies": list(proxy_names)}
+            return {"name": name, "type": "fallback", "url": "http://www.gstatic.com/generate_204",
+                    "interval": 180, "proxies": list(auto_order)}
         if name in ("🎬 看视频", "🤖 AI"):
-            return {"name": name, "type": "select", "proxies": ["♻️ 自动选择", "🚀 手动选择", *proxy_names]}
-        return {"name": name, "type": "select", "proxies": [*proxy_names, "DIRECT"]}
+            return {"name": name, "type": "select", "proxies": ["♻️ 自动选择", "🚀 手动选择", *auto_order]}
+        return {"name": name, "type": "select", "proxies": [*auto_order, "DIRECT"]}
 
     config = {
         "mixed-port": 7890, "allow-lan": True, "mode": "rule", "log-level": "info",

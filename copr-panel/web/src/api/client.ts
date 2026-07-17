@@ -24,7 +24,11 @@ export const login = (user: string, pass: string) =>
 // s-ui 全量数据在 /load(不是 getData —— 那是内部函数)。返回 {success,msg,obj:{clients,inbounds,onlines,...}}
 export const loadData = () => req(API, '/load')
 export const getOnlines = () => req(API, '/onlines')
-export const getStats = () => req(API, '/stats')
+// 每节点真实流量时序:resource=inbound, tag=节点tag → [{dateTime,direction,traffic}]
+export const getStats = (resource: string, tag: string, start = 0, end = 9999999999, limit = 500) => {
+  const q = new URLSearchParams({ resource, tag, start: String(start), end: String(end), limit: String(limit) })
+  return req(API, '/stats?' + q.toString())
+}
 
 // 通用保存:object=inbounds|clients|... , action=new|edit|del , data=JSON
 export const save = (object: string, action: string, data: unknown, initUsers?: string) => {
