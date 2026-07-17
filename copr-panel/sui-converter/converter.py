@@ -3,7 +3,7 @@
 onetapclash 壳层 2.1 — s-ui 订阅 converter(修正版)。
 2.0 的教训:rule-providers 指向 GitHub raw,国内客户端拉不到 → 全崩。
 2.1 改用【内联 GEOSITE / GEOIP 规则】—— mihomo 自带 geosite/geoip 数据,零外部下载、国内直接可用
-(和一直能用的 1.0 同机制,只是更模块化 + 加看视频/AI 分组)。DNS 保持简单直连。
+(和一直能用的 1.0 同机制,只是更模块化)。分组只留 自动选择/手动选择。DNS 保持简单直连。
 路由/地址/users.json 与 1.0 完全一致,订阅地址不变。
 """
 from flask import Flask, Response, request, jsonify
