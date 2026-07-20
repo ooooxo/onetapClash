@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  一键部署 s-ui 前端 + 域名硬化 Hysteria2 预设 + 节点转换/规则注入订阅
+#  一键部署:s-ui 后端 + Vue 前端面板 + 节点转换/规则注入订阅(+可选域名硬化)
 #  在服务器上以 root 运行:  sudo bash bootstrap.sh
-#  读取同目录 config.env(复制 config.env.example 填写)。幂等,每步先备份。
+#  读取同目录 config.env(可选,作默认值)。幂等,每步先备份。
+#  Vue 面板用随仓库带的预编译 deploy/webdist(服务器免装 node/构建)。
 #
 #  职责边界(诚实):
-#   - 确定性、安全的部分 → 全自动:装 s-ui、申请域名证书、部署 converter(含防
-#     泄漏规则)、nginx 订阅前端、ufw、自检。
+#   - 确定性、安全的部分 → 全自动:装/复用 s-ui、申请域名证书、部署 converter(含
+#     防泄漏规则)、部署 Vue 面板 + nginx(同源反代 s-ui/converter)、订阅、ufw、自检。
 #   - 唯一需要动 s-ui 节点 TLS 的一步(把 hy2 换成域名+真实证书)→ 若 config.env
 #     填了 s-ui 管理员账号密码,经 s-ui API 自动应用;否则打印面板手动步骤。
 #     绝不盲改数据库,避免弄坏你现有节点/用户。
@@ -32,6 +33,13 @@ HY2_TAG="${HY2_TAG:-快速节点}"
 SUI_API="${SUI_API:-}"; SUI_USER="${SUI_USER:-}"; SUI_PASS="${SUI_PASS:-}"
 DOMAIN="${DOMAIN:-}"; TLS_CERT="${TLS_CERT:-}"; TLS_KEY="${TLS_KEY:-}"
 CONV_ADMIN_SECRET="${CONV_ADMIN_SECRET:-}"
+# Vue 面板(copr-panel/web 预编译 dist,随仓库带在 deploy/webdist,服务器免工具链)
+PANEL="${PANEL:-yes}"
+PANEL_DIR="${PANEL_DIR:-/opt/copr-panel/web}"
+PANEL_PATH="${PANEL_PATH:-/panel/}"
+SUI_ADDR="${SUI_ADDR:-}"          # 反代 s-ui 的本机地址 127.0.0.1:<面板端口>
+SUI_BASE="${SUI_BASE:-/app/}"
+TLS_PORT="${TLS_PORT:-443}"
 
 _ask(){  # _ask VAR "提示" "默认" [secret];已由 config.env 提供则不问;无 TTY 用默认
   local var="$1" msg="$2" def="${3:-}" secret="${4:-}" input
@@ -61,6 +69,14 @@ _prompt_config(){
   TLS_CERT="${TLS_CERT:-/etc/letsencrypt/live/${DOMAIN}/fullchain.pem}"
   TLS_KEY="${TLS_KEY:-/etc/letsencrypt/live/${DOMAIN}/privkey.pem}"
   [[ -n "$CONV_ADMIN_SECRET" ]] || CONV_ADMIN_SECRET="$(openssl rand -hex 24 2>/dev/null || echo "change-me-$(date +%s)")"
+  # 反代 s-ui 用的本机地址/base(Vue 面板 /panel/api/ 同源反代到 s-ui)
+  local ss2; ss2="$(/usr/local/s-ui/sui setting show 2>/dev/null || true)"
+  if [[ -z "$SUI_ADDR" ]]; then
+    local sport; sport="$(printf '%s\n' "$ss2" | awk -F'[: \t]+' '/Panel port/{print $(NF)}')"
+    [[ -n "$sport" ]] && SUI_ADDR="127.0.0.1:${sport}"
+  fi
+  local sbase; sbase="$(printf '%s\n' "$ss2" | awk -F'Panel path:' '/Panel path/{gsub(/[ \t]/,"",$2);print $2}')"
+  [[ -n "$sbase" ]] && SUI_BASE="$sbase"
   local dohard="y"
   [[ -t 0 ]] && read -rp "  自动把 hy2 节点切到域名证书?(需 s-ui 管理员账号)[Y/n]: " dohard
   if [[ "$(lc "${dohard:-y}")" != "n" ]]; then
@@ -78,7 +94,7 @@ _deps(){
   log "安装依赖..."
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq 2>&1 | tail -1
-  apt-get install -y -qq curl wget jq unzip nginx certbot \
+  apt-get install -y -qq curl wget jq unzip nginx certbot gettext-base \
     python3 python3-venv python3-pip sqlite3 ufw >/dev/null 2>&1 || true
   ok "依赖就绪"
 }
@@ -103,16 +119,17 @@ _certs(){
   if [[ "$CERT_MODE" != "le" ]]; then
     warn "CERT_MODE=$CERT_MODE,跳过 LE(请自备 $TLS_CERT / $TLS_KEY)"; return
   fi
-  mkdir -p /var/www/html/.well-known/acme-challenge
-  # 先起一个临时 80 站点供 http-01
+  mkdir -p /var/www/certbot/.well-known/acme-challenge
+  # 先起一个临时 80 站点供 http-01(webroot 用 /var/www/certbot,与最终 nginx 模板一致→续期不断)
   cat > /etc/nginx/sites-available/acme-bootstrap <<EOF
 server { listen 80; listen [::]:80; server_name ${DOMAIN};
-  root /var/www/html; location /.well-known/acme-challenge/ { } location / { return 404; } }
+  location ^~ /.well-known/acme-challenge/ { root /var/www/certbot; } location / { return 404; } }
 EOF
   ln -sf /etc/nginx/sites-available/acme-bootstrap /etc/nginx/sites-enabled/acme-bootstrap
-  nginx -t >/dev/null 2>&1 && systemctl reload nginx 2>/dev/null || systemctl restart nginx || true
+  rm -f /etc/nginx/sites-enabled/default
+  nginx -t >/dev/null 2>&1 && { systemctl reload nginx 2>/dev/null || systemctl restart nginx; } || systemctl restart nginx || true
   log "申请/续期 Let's Encrypt 证书 (webroot)..."
-  certbot certonly --webroot -w /var/www/html -d "$DOMAIN" \
+  certbot certonly --webroot -w /var/www/certbot -d "$DOMAIN" \
     --non-interactive --agree-tos --register-unsafely-without-email --keep-until-expiring -q \
     || warn "LE 证书申请失败(检查 TCP80 公网可达 / DNS / 云安全组)"
   local certs; certs="$(certbot certificates 2>/dev/null || true)"
@@ -185,24 +202,49 @@ _seed_users(){
   ok "users.json 回填 $(echo "$map" | jq 'length') 个用户 → 订阅 https://${DOMAIN}/get/<name>"
 }
 
-# ── 6) nginx 订阅前端(域名 TLS;/get 公开订阅)───────────────────────────────
+# ── 6a) Vue 面板(预编译 dist,随仓库带,服务器免 node/构建)──────────────────
+_panel(){
+  [[ "$(lc "$PANEL")" == "no" ]] && { warn "PANEL=no,跳过 Vue 面板"; return; }
+  local src; src="$(pwd)/webdist"
+  if [[ ! -f "$src/index.html" ]]; then
+    warn "缺预编译面板 $src(仓库应含 deploy/webdist)→ 跳过面板,仅订阅"; PANEL="no"; return
+  fi
+  log "部署 Vue 面板(预编译 dist)..."
+  mkdir -p "$PANEL_DIR"; rm -rf "${PANEL_DIR:?}/"* 2>/dev/null || true
+  cp -r "$src/." "$PANEL_DIR/"; chown -R root:root "$PANEL_DIR"
+  ok "Vue 面板就位: $PANEL_DIR"
+}
+
+# ── 6b) nginx:有面板+证书→完整模板(面板+反代 s-ui/converter+订阅);否则仅订阅 ──
 _nginx(){
-  log "配置 nginx 订阅前端..."
-  rm -f /etc/nginx/sites-enabled/acme-bootstrap
+  log "配置 nginx..."
+  rm -f /etc/nginx/sites-enabled/acme-bootstrap /etc/nginx/sites-enabled/default
+  mkdir -p /var/www/certbot
   local have_tls=0; [[ -f "$TLS_CERT" && -f "$TLS_KEY" ]] && have_tls=1
-  cat > /etc/nginx/sites-available/copr-sub.conf <<EOF
+  if [[ "$(lc "$PANEL")" != "no" && -f "$PANEL_DIR/index.html" && $have_tls == 1 ]]; then
+    [[ -f nginx-copr-tls.conf.template ]] || die "缺 nginx-copr-tls.conf.template"
+    [[ -n "$SUI_ADDR" ]] || die "未探测到 s-ui 面板端口(SUI_ADDR),无法配面板反代"
+    log "完整 nginx:Vue 面板 ${PANEL_PATH} + 反代 s-ui/converter + 订阅(TLS :${TLS_PORT})"
+    export DOMAIN PANEL_PATH PANEL_DIR SUI_ADDR SUI_BASE CONV_ADDR CONV_ADMIN_SECRET TLS_PORT TLS_CERT TLS_KEY
+    envsubst '$DOMAIN $PANEL_PATH $PANEL_DIR $SUI_ADDR $SUI_BASE $CONV_ADDR $CONV_ADMIN_SECRET $TLS_PORT $TLS_CERT $TLS_KEY' \
+      < nginx-copr-tls.conf.template > /etc/nginx/sites-available/copr.conf
+    rm -f /etc/nginx/sites-enabled/copr-sub.conf
+    ln -sf /etc/nginx/sites-available/copr.conf /etc/nginx/sites-enabled/copr.conf
+  else
+    warn "无面板/无证书 → 仅订阅前端"
+    rm -f /etc/nginx/sites-enabled/copr.conf
+    cat > /etc/nginx/sites-available/copr-sub.conf <<EOF
 server {
   listen 80; listen [::]:80; server_name ${DOMAIN};
-  root /var/www/html;
-  location /.well-known/acme-challenge/ { }
+  location ^~ /.well-known/acme-challenge/ { root /var/www/certbot; }
   location /get/ { proxy_pass http://${CONV_ADDR}; proxy_set_header Host \$host; }
-$( [[ $have_tls == 1 ]] && echo '  location / { return 301 https://$host$request_uri; }' || echo '  location /health { proxy_pass http://'"${CONV_ADDR}"'; } location / { return 404; }' )
+$( [[ $have_tls == 1 ]] && echo "  location / { return 301 https://\$host:${TLS_PORT}\$request_uri; }" || echo '  location /health { proxy_pass http://'"${CONV_ADDR}"'; } location / { return 404; }' )
 }
 EOF
-  if [[ $have_tls == 1 ]]; then
-    cat >> /etc/nginx/sites-available/copr-sub.conf <<EOF
+    if [[ $have_tls == 1 ]]; then
+      cat >> /etc/nginx/sites-available/copr-sub.conf <<EOF
 server {
-  listen 443 ssl http2; listen [::]:443 ssl http2; server_name ${DOMAIN};
+  listen ${TLS_PORT} ssl http2; listen [::]:${TLS_PORT} ssl http2; server_name ${DOMAIN};
   ssl_certificate ${TLS_CERT}; ssl_certificate_key ${TLS_KEY};
   ssl_protocols TLSv1.2 TLSv1.3;
   location /get/    { proxy_pass http://${CONV_ADDR}; proxy_set_header Host \$host; }
@@ -210,9 +252,10 @@ server {
   location /        { return 404; }
 }
 EOF
+    fi
+    ln -sf /etc/nginx/sites-available/copr-sub.conf /etc/nginx/sites-enabled/copr-sub.conf
   fi
-  ln -sf /etc/nginx/sites-available/copr-sub.conf /etc/nginx/sites-enabled/copr-sub.conf
-  nginx -t && systemctl reload nginx && ok "nginx 就绪(订阅前端)" || die "nginx 校验失败"
+  nginx -t && { systemctl enable nginx >/dev/null 2>&1; systemctl restart nginx; ok "nginx 就绪"; } || die "nginx 校验失败"
 }
 
 # ── 7) 域名硬化 hy2 节点(s-ui v1.2+ API:POST api/save object=tls)──────────────
@@ -275,9 +318,9 @@ _harden_hy2(){
 # ── 8) ufw + 自检 ─────────────────────────────────────────────────────────────
 _firewall(){
   command -v ufw >/dev/null || return
-  ufw allow 80/tcp   >/dev/null 2>&1 || true
-  ufw allow 443/tcp  >/dev/null 2>&1 || true
-  ok "ufw:已放行 80/443(UDP 代理端口与 s-ui 面板端口请确保已放行)"
+  ufw allow 80/tcp          >/dev/null 2>&1 || true
+  ufw allow "${TLS_PORT}/tcp" >/dev/null 2>&1 || true
+  ok "ufw:已放行 80/${TLS_PORT}(UDP 代理端口与 s-ui 面板端口请确保已放行)"
 }
 _selfcheck(){
   echo ""; log "自检"
@@ -294,22 +337,28 @@ main(){
   _certs
   _converter
   _seed_users
+  _panel
   _nginx
   _harden_hy2
   _firewall
   _selfcheck
   echo ""; ok "完成。备份目录: $BK"
   local div="────────────────────────────────────────────────────────"
-  local panel="${SUI_API:-$(_detect_panel_url)}"
+  local suipanel="${SUI_API:-$(_detect_panel_url)}"
+  local portsuffix=""; [[ "$TLS_PORT" != "443" ]] && portsuffix=":${TLS_PORT}"
   echo -e "${C}${div}${N}"
-  echo -e "  ${G}▍s-ui 面板(浏览器打开这个网址登录):${N}"
-  echo -e "      ${B:-}${panel:-http://<你的域名>:9000/app/}"
-  echo -e "  ${G}▍订阅前端:${N} https://${DOMAIN}/get/<用户名>"
+  if [[ "$(lc "$PANEL")" != "no" && -f "$PANEL_DIR/index.html" ]]; then
+    echo -e "  ${G}▍Vue 前端(浏览器打开这个,登录=s-ui 账号密码):${N}"
+    echo -e "      https://${DOMAIN}${portsuffix}${PANEL_PATH}"
+  fi
+  echo -e "  ${G}▍s-ui 后端面板(开节点/深度设置):${N}"
+  echo -e "      ${suipanel:-http://<你的域名>:2095/app/}"
+  echo -e "  ${G}▍订阅前端:${N} https://${DOMAIN}${portsuffix}/get/<用户名>"
   if [[ -f "$CONV_DIR/users.json" ]]; then
     local names; names="$(jq -r 'keys[]' "$CONV_DIR/users.json" 2>/dev/null || true)"
     if [[ -n "$names" ]]; then
       echo -e "  ${G}▍各用户订阅地址(直接导入 Clash Verge):${N}"
-      while IFS= read -r nm; do [[ -n "$nm" ]] && echo "      https://${DOMAIN}/get/${nm}"; done <<< "$names"
+      while IFS= read -r nm; do [[ -n "$nm" ]] && echo "      https://${DOMAIN}${portsuffix}/get/${nm}"; done <<< "$names"
     fi
   fi
   echo -e "  ${G}▍converter 管理密钥(改分流规则用,请保存):${N} ${CONV_ADMIN_SECRET}"
