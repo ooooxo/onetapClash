@@ -85,7 +85,9 @@ _deps(){
 
 # ── 2) s-ui:没有则官方安装,有则复用 ─────────────────────────────────────────
 _ensure_sui(){
-  if systemctl list-unit-files 2>/dev/null | grep -q '^s-ui\.service'; then
+  # 注意:不要用 `list-unit-files | grep -q`——grep -q 命中即关管道,systemctl 收 SIGPIPE(141),
+  # 在 set -o pipefail 下会被判为"未安装"。用无管道的 systemctl cat / 二进制存在性检测。
+  if systemctl cat s-ui >/dev/null 2>&1 || [[ -x /usr/local/s-ui/sui ]]; then
     ok "检测到已安装的 s-ui,复用(不动现有节点/用户)"
     return
   fi
@@ -113,7 +115,8 @@ EOF
   certbot certonly --webroot -w /var/www/html -d "$DOMAIN" \
     --non-interactive --agree-tos --register-unsafely-without-email --keep-until-expiring -q \
     || warn "LE 证书申请失败(检查 TCP80 公网可达 / DNS / 云安全组)"
-  if certbot certificates 2>/dev/null | grep -q "Domains:.*\b${DOMAIN}\b"; then
+  local certs; certs="$(certbot certificates 2>/dev/null || true)"
+  if grep -q "Domains:.*\b${DOMAIN}\b" <<<"$certs"; then
     ok "域名证书就绪: $TLS_CERT"
   else
     warn "无受管 LE 证书,后续 nginx 若无 $TLS_CERT 将仅提供 HTTP"
