@@ -7,7 +7,8 @@ onetapclash 壳层 2.1 — s-ui 订阅 converter(修正版)。
 路由/地址/users.json 与 1.0 完全一致,订阅地址不变。
 """
 from flask import Flask, Response, request, jsonify
-import requests, yaml, json, os
+import requests, yaml, json, os, base64, binascii
+from urllib.parse import urlparse, parse_qs, unquote
 from functools import wraps
 
 app = Flask(__name__)
@@ -48,6 +49,153 @@ def require_secret(f):
             return jsonify({"error": "Unauthorized"}), 401
         return f(*args, **kwargs)
     return decorated
+
+
+# ── s-ui 原生订阅解析(base64 的 URI 列表 → Clash proxies)─────────────────────
+# s-ui 订阅永远返回 base64 编码的 分享链接列表(hysteria2:// / vless:// ...),不是 Clash。
+# converter 自己解析,零依赖 s-ui 的订阅格式设置。
+def _b64d(s):
+    s = s.strip().replace("-", "+").replace("_", "/")
+    try:
+        return base64.b64decode(s + "=" * (-len(s) % 4)).decode("utf-8", "ignore")
+    except (binascii.Error, ValueError):
+        return ""
+
+def extract_proxies(text):
+    # 1) 上游本就是 Clash YAML(兼容旧 users.json)
+    try:
+        raw = yaml.safe_load(text)
+        if isinstance(raw, dict) and raw.get("proxies"):
+            return raw["proxies"]
+    except Exception:
+        pass
+    # 2) s-ui 原生:整体 base64 → 逐行 URI
+    body = text
+    if "://" not in body:
+        dec = _b64d(text)
+        if "://" in dec:
+            body = dec
+    out = []
+    for line in body.splitlines():
+        line = line.strip()
+        if "://" not in line:
+            continue
+        p = _parse_uri(line)
+        if p:
+            out.append(p)
+    return out
+
+def _name(u, default):
+    return unquote(u.fragment) if u.fragment else default
+
+def _parse_uri(uri):
+    scheme = uri.split("://", 1)[0].lower()
+    try:
+        return {
+            "hysteria2": _p_hy2, "hy2": _p_hy2, "vless": _p_vless,
+            "trojan": _p_trojan, "vmess": _p_vmess, "ss": _p_ss, "tuic": _p_tuic,
+        }.get(scheme, lambda _u: None)(uri)
+    except Exception:
+        return None
+
+def _p_hy2(uri):
+    u = urlparse(uri); q = parse_qs(u.query)
+    p = {"name": _name(u, u.hostname or "hy2"), "type": "hysteria2",
+         "server": u.hostname, "port": u.port or 443,
+         "password": unquote(u.username or ""), "udp": True,
+         "skip-cert-verify": q.get("insecure", ["0"])[0] in ("1", "true")}
+    if q.get("sni", [None])[0]: p["sni"] = q["sni"][0]
+    alpn = q.get("alpn", [None])[0]
+    p["alpn"] = alpn.split(",") if alpn else ["h3"]
+    if q.get("obfs", [None])[0] in ("salamander",):
+        p["obfs"] = "salamander"
+        if q.get("obfs-password", [None])[0]: p["obfs-password"] = q["obfs-password"][0]
+    return p
+
+def _tls_common(p, q, default_sni=None):
+    sec = q.get("security", ["none"])[0]
+    if sec in ("tls", "reality", "xtls"):
+        p["tls"] = True
+        sni = q.get("sni", [q.get("host", [default_sni])[0]])[0]
+        if sni: p["servername"] = sni
+        if q.get("fp", [None])[0]: p["client-fingerprint"] = q["fp"][0]
+        if q.get("insecure", ["0"])[0] in ("1", "true"): p["skip-cert-verify"] = True
+        if sec == "reality":
+            ro = {}
+            if q.get("pbk", [None])[0]: ro["public-key"] = q["pbk"][0]
+            if q.get("sid", [None])[0]: ro["short-id"] = q["sid"][0]
+            if ro: p["reality-opts"] = ro
+    return p
+
+def _net_common(p, q):
+    net = q.get("type", ["tcp"])[0]
+    p["network"] = net
+    if net == "ws":
+        opts = {"path": q.get("path", ["/"])[0]}
+        if q.get("host", [None])[0]: opts["headers"] = {"Host": q["host"][0]}
+        p["ws-opts"] = opts
+    elif net == "grpc" and q.get("serviceName", [None])[0]:
+        p["grpc-opts"] = {"grpc-service-name": q["serviceName"][0]}
+    return p
+
+def _p_vless(uri):
+    u = urlparse(uri); q = parse_qs(u.query)
+    p = {"name": _name(u, u.hostname or "vless"), "type": "vless",
+         "server": u.hostname, "port": u.port or 443, "uuid": u.username, "udp": True}
+    if q.get("flow", [None])[0]: p["flow"] = q["flow"][0]
+    return _tls_common(_net_common(p, q), q)
+
+def _p_trojan(uri):
+    u = urlparse(uri); q = parse_qs(u.query)
+    p = {"name": _name(u, u.hostname or "trojan"), "type": "trojan",
+         "server": u.hostname, "port": u.port or 443,
+         "password": unquote(u.username or ""), "udp": True}
+    p["tls"] = True
+    sni = q.get("sni", [q.get("host", [None])[0]])[0]
+    if sni: p["sni"] = sni
+    if q.get("insecure", ["0"])[0] in ("1", "true"): p["skip-cert-verify"] = True
+    return _net_common(p, q)
+
+def _p_vmess(uri):
+    j = json.loads(_b64d(uri.split("://", 1)[1]) or "{}")
+    p = {"name": j.get("ps") or j.get("add", "vmess"), "type": "vmess",
+         "server": j.get("add"), "port": int(j.get("port", 443)),
+         "uuid": j.get("id"), "alterId": int(j.get("aid", 0)),
+         "cipher": j.get("scy", "auto"), "udp": True,
+         "network": j.get("net", "tcp")}
+    if str(j.get("tls", "")).lower() in ("tls", "1", "true"):
+        p["tls"] = True
+        if j.get("sni") or j.get("host"): p["servername"] = j.get("sni") or j.get("host")
+    if j.get("net") == "ws":
+        opts = {"path": j.get("path", "/")}
+        if j.get("host"): opts["headers"] = {"Host": j["host"]}
+        p["ws-opts"] = opts
+    return p
+
+def _p_ss(uri):
+    rest = uri.split("://", 1)[1]
+    frag, name = "", "ss"
+    if "#" in rest:
+        rest, frag = rest.split("#", 1); name = unquote(frag)
+    if "@" in rest:
+        cred, host = rest.split("@", 1); cred = _b64d(cred) or cred
+    else:
+        dec = _b64d(rest); cred, host = dec.split("@", 1)
+    method, password = cred.split(":", 1)
+    host = host.split("?", 1)[0]
+    server, port = host.rsplit(":", 1)
+    return {"name": name, "type": "ss", "server": server, "port": int(port),
+            "cipher": method, "password": password, "udp": True}
+
+def _p_tuic(uri):
+    u = urlparse(uri); q = parse_qs(u.query)
+    p = {"name": _name(u, u.hostname or "tuic"), "type": "tuic",
+         "server": u.hostname, "port": u.port or 443, "udp": True,
+         "uuid": u.username, "password": unquote(u.password or "")}
+    if q.get("sni", [None])[0]: p["sni"] = q["sni"][0]
+    if q.get("alpn", [None])[0]: p["alpn"] = q["alpn"][0].split(",")
+    if q.get("allow_insecure", ["0"])[0] in ("1", "true"): p["skip-cert-verify"] = True
+    return p
 
 
 def build_dns():
@@ -135,8 +283,7 @@ def get_sub(username):
         return Response("User not found", status=404)
     try:
         resp = requests.get(users[username]["url"], verify=False, timeout=10)
-        raw = yaml.safe_load(resp.text)
-        proxies = raw.get("proxies", [])
+        proxies = extract_proxies(resp.text)   # 兼容 Clash YAML 与 s-ui 原生 base64 URI
         if not proxies:
             return Response("No proxies found", status=502)
         return build_clash_config(proxies, resp.headers.get("Subscription-Userinfo", ""))
