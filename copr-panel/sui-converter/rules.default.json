@@ -1,10 +1,13 @@
 {
-  "_comment": "模块化分流 2.1 — 内联 GEOSITE/GEOIP,mihomo 自带数据、零外部下载、国内可用。顺序=优先级。面板可编辑。",
+  "_comment": "模块化分流 2.1 + 防泄漏 — 内联 GEOSITE/GEOIP,mihomo 自带数据、零外部下载、国内可用。顺序=优先级(上=高)。面板可编辑。",
   "groups": ["♻️ 自动选择", "🚀 手动选择"],
   "final": "♻️ 自动选择",
   "modules": [
+    { "id": "antileak", "name": "防泄漏(WebRTC/STUN)", "enabled": true, "policy": "REJECT", "geosite": [], "geoip": [],
+      "rules": ["DOMAIN-KEYWORD,stun,REJECT", "DOMAIN-SUFFIX,stunprotocol.org,REJECT", "DST-PORT,3478,REJECT", "DST-PORT,5349,REJECT", "DST-PORT,19302,REJECT"] },
     { "id": "reject", "name": "广告拦截", "enabled": true, "policy": "REJECT", "geosite": ["category-ads-all"], "geoip": [], "rules": [] },
     { "id": "cn", "name": "国内直连", "enabled": true, "policy": "DIRECT", "geosite": ["cn"], "geoip": ["CN"], "rules": ["DOMAIN-SUFFIX,cn,DIRECT"] },
+    { "id": "ai", "name": "AI/Claude→自动选择", "enabled": true, "policy": "♻️ 自动选择", "geosite": ["openai"], "geoip": [], "rules": ["DOMAIN-SUFFIX,claude.ai,♻️ 自动选择", "DOMAIN-SUFFIX,anthropic.com,♻️ 自动选择", "DOMAIN-KEYWORD,anthropic,♻️ 自动选择"] },
     { "id": "telegram", "name": "电报", "enabled": true, "policy": "♻️ 自动选择", "geosite": ["telegram"], "geoip": [], "rules": [] },
     { "id": "custom", "name": "自定义", "enabled": true, "policy": "🚀 手动选择", "geosite": [], "geoip": [], "rules": [] }
   ]

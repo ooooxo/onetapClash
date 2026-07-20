@@ -51,13 +51,23 @@ def require_secret(f):
 
 
 def build_dns():
-    # 简单直连 DNS(和 1.0 一致,国内可用),不做 geosite nameserver-policy(兼容性差)
+    # 防泄漏 DNS:
+    # - respect-rules=true → DNS 查询跟随代理规则走节点出口,境外域名的解析地区与出口一致(治 "DNS/代理地区冲突")
+    # - 境外域名走远端 DoH(经节点),境内走国内 DNS;proxy-server-nameserver 解析节点自身域名走国内直连,避免回环
+    # - fake-ip 防污染。ipv6 关闭,减少 IPv6 直连泄漏面
     return {
         "enable": True, "ipv6": False, "listen": "0.0.0.0:1053",
         "enhanced-mode": "fake-ip", "fake-ip-range": "198.18.0.1/16",
+        "fake-ip-filter": ["*.lan", "+.local", "localhost", "*.localdomain",
+                           "+.pool.ntp.org", "time.*.com", "*.msftconnecttest.com"],
         "default-nameserver": ["223.5.5.5", "119.29.29.29"],
-        "nameserver": ["223.5.5.5", "119.29.29.29"],
-        "fake-ip-filter": ["*.lan", "+.local", "localhost", "*.localdomain"],
+        "proxy-server-nameserver": ["https://223.5.5.5/dns-query"],
+        "nameserver": ["https://223.5.5.5/dns-query", "https://doh.pub/dns-query"],
+        "nameserver-policy": {
+            "geosite:cn,private": ["223.5.5.5", "119.29.29.29"],
+            "geosite:geolocation-!cn": ["https://1.1.1.1/dns-query", "https://dns.google/dns-query"],
+        },
+        "respect-rules": True,
     }
 
 
