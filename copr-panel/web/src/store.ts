@@ -40,7 +40,7 @@ export const store = reactive({
   loggedIn: false,
   view: 'dash' as ViewId,
   theme: (localStorage.getItem('theme') as 'dark' | 'light') || 'dark',
-  domain: 'copr.site',
+  domain: 'unban.cyou',
   live: false,      // true = 已接 s-ui 真数据
   loading: false,
   error: '',
@@ -49,7 +49,7 @@ export const store = reactive({
   onlineInbounds: [] as string[],  // 有活跃连接的节点 tag(真数据,来自 onlines）
   onlineUsers: [] as string[],
   subUrl(name: string) { return `${location.origin}/get/${name}` }, // 跟随面板协议/端口(HTTPS 面板→HTTPS 订阅)
-  suiUrl() { return `http://${this.domain}:2020/app/` }, // s-ui 原面板(深水区:开节点/改凭证)
+  suiUrl() { return `http://${this.domain}:2095/app/` }, // s-ui 原面板(深水区:开节点/改凭证)
   async load() {
     this.loading = true; this.error = ''
     try {

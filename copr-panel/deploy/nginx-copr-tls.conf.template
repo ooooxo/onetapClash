@@ -18,9 +18,8 @@ server {
 }
 # :${TLS_PORT} —— HTTPS 面板 + 加密订阅
 server {
-    listen ${TLS_PORT} ssl;
-    listen [::]:${TLS_PORT} ssl;
-    http2 on;
+    listen ${TLS_PORT} ssl http2;
+    listen [::]:${TLS_PORT} ssl http2;
     server_name ${DOMAIN};
     ssl_certificate ${TLS_CERT};
     ssl_certificate_key ${TLS_KEY};
