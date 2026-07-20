@@ -261,8 +261,8 @@ _stop_old_services(){
   done
   for p in 8080 8088; do
     local pids
-    pids="$(ss -tlnp 2>/dev/null | awk -v port=":${p} " '
-      $0 ~ port { match($0, /pid=([0-9]+)/, a); if (a[1]) print a[1] }')" || true
+    # mawk(Debian 默认)不支持 3 参数 match()，改用 ss 过滤 + grep 提取 pid，跨发行版可用
+    pids="$(ss -tlnpH "sport = :${p}" 2>/dev/null | grep -oE 'pid=[0-9]+' | grep -oE '[0-9]+' | sort -u)" || true
     [[ -n "$pids" ]] && echo "$pids" | xargs -r kill -9 2>/dev/null || true
   done
   [[ -d "$SCFG/venv" ]] && rm -rf "$SCFG/venv" || true
@@ -351,16 +351,21 @@ _firewall_open_ports_domain(){
 _install_hy2_bin(){
   log "下载 Hysteria2..."
   local ver arch url
-  ver="$(curl -sL --max-time 10 https://api.github.com/repos/apernet/hysteria/releases/latest \
-         | jq -r '.tag_name' 2>/dev/null || echo "app/v2.6.1")"
+  ver="$(curl -fsSL --max-time 10 https://api.github.com/repos/apernet/hysteria/releases/latest \
+         | jq -r '.tag_name // empty' 2>/dev/null)"
+  # API 限流/无返回时 ver 可能为空或 "null"，回退到已知版本，避免拼出 /download/null/ → 404
+  [[ -z "$ver" || "$ver" == "null" ]] && { warn "GitHub API 未返回版本(限流?)，使用回退版本 app/v2.10.0"; ver="app/v2.10.0"; }
   case "$(uname -m)" in
     x86_64)  arch="amd64" ;;
     aarch64) arch="arm64" ;;
     *)       arch="amd64" ;;
   esac
   url="https://github.com/apernet/hysteria/releases/download/${ver}/hysteria-linux-${arch}"
-  curl -sL --max-time 60 "$url" -o "$HBIN" || die "Hysteria2 下载失败"
+  # -f：HTTP 错误(404/403)即失败，不把 "Not Found" 网页写进二进制
+  curl -fSL --max-time 120 "$url" -o "$HBIN" || die "Hysteria2 下载失败: $url"
   chmod +x "$HBIN"
+  # 校验二进制可执行（下载损坏/架构错误会在此拦截，而不是 systemd 里 203/EXEC）
+  "$HBIN" version >/dev/null 2>&1 || die "Hysteria2 二进制无效(下载损坏/格式错误): $url"
   ok "Hysteria2 ${ver#app/} 安装完成"
 }
 
