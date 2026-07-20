@@ -407,23 +407,23 @@ _setup_certs(){
   if [[ "$mode" == "1" ]]; then
     systemctl reload nginx 2>/dev/null || systemctl start nginx 2>/dev/null || true
     mkdir -p /var/www/html/.well-known/acme-challenge
-    # 已有未到期证书则直接复用，避免重复走 http-01 校验
-    if [[ -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]]; then
-      log "检测到已有 Let's Encrypt 证书，尝试续期（未到期则跳过）..."
-      certbot renew -q 2>/dev/null || true
-    else
-      log "申请 Let's Encrypt 证书 (webroot)..."
-      certbot certonly --webroot -w /var/www/html -d "$domain" \
-        --non-interactive --agree-tos --register-unsafely-without-email -q \
-        || warn "LE 证书失败（检查 80 端口/DNS/安全组），改用自签名"
-    fi
-    if [[ -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]]; then
+    log "申请/续期 Let's Encrypt 证书 (webroot)..."
+    # 交给 certbot 自己判断：已有受管有效证书则保留(--keep-until-expiring)，否则签发。
+    # 不再用「文件存在」判定，避免历史自签证书误占 live 目录导致跳过真实签发。
+    certbot certonly --webroot -w /var/www/html -d "$domain" \
+      --non-interactive --agree-tos --register-unsafely-without-email \
+      --keep-until-expiring -q \
+      || warn "LE 证书申请失败（检查 TCP 80 公网可达 / DNS 解析 / 云安全组）"
+    # 仅当 certbot 确认该域名为其受管证书时才使用，排除自签占位
+    if certbot certificates 2>/dev/null | grep -q "Domains:.*\b${domain}\b" \
+       && [[ -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]]; then
       mkdir -p /etc/ssl/vpn
       ln -sf "/etc/letsencrypt/live/${domain}/fullchain.pem" /etc/ssl/vpn/cert.pem
       ln -sf "/etc/letsencrypt/live/${domain}/privkey.pem"   /etc/ssl/vpn/key.pem
       ok "Let's Encrypt 证书就绪"
       return
     fi
+    warn "未取得受管 LE 证书，改用自签名（客户端需 skip-cert-verify=true）"
   fi
   _gen_self_signed_cert_domain "$domain"
 }
