@@ -55,14 +55,20 @@ export const store = reactive({
     try {
       const r: any = await loadData()
       const o = r?.obj ?? r
+      // 未登录时 s-ui 会 307 跳 /login,fetch 跟随后拿到 "OK" 字符串;必须校验真有 clients 数组,
+      // 否则不能算 live(否则显示"线上"+演示数据,误导)。抛错交给 onMounted/doLogin 走登录。
+      if (!o || typeof o !== 'object' || !Array.isArray(o.clients)) {
+        throw new Error('未登录或后端未返回数据')
+      }
       const onlineUsers: string[] = o?.onlines?.user ?? []
       this.onlineUsers = onlineUsers
       this.onlineInbounds = o?.onlines?.inbound ?? []
-      if (Array.isArray(o?.clients)) this.members = o.clients.map((c: any) => mapClient(c, onlineUsers))
-      if (Array.isArray(o?.inbounds)) this.nodes = o.inbounds.map(mapInbound)
+      this.members = o.clients.map((c: any) => mapClient(c, onlineUsers))
+      if (Array.isArray(o.inbounds)) this.nodes = o.inbounds.map(mapInbound)
       this.live = true
     } catch (e: any) {
-      this.error = String(e?.message || e); this.live = false   // 保持演示数据
+      this.error = String(e?.message || e); this.live = false
+      throw e   // 让 onMounted(回登录页)/doLogin(报错)知道没成功,绝不假装演示数据
     } finally { this.loading = false }
   },
   toggleTheme() {
