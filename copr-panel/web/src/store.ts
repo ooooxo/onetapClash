@@ -40,7 +40,7 @@ export const store = reactive({
   loggedIn: false,
   view: 'dash' as ViewId,
   theme: (localStorage.getItem('theme') as 'dark' | 'light') || 'dark',
-  domain: 'unban.cyou',
+  domain: (typeof location !== 'undefined' && location.hostname) || 'panel',  // 自动取当前访问域名,不写死
   live: false,      // true = 已接 s-ui 真数据
   loading: false,
   error: '',
