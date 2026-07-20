@@ -198,16 +198,21 @@ def _p_tuic(uri):
     return p
 
 
-def build_dns():
+def build_dns(direct_domains=None):
     # 防泄漏 DNS:
     # - respect-rules=true → DNS 查询跟随代理规则走节点出口,境外域名的解析地区与出口一致(治 "DNS/代理地区冲突")
     # - 境外域名走远端 DoH(经节点),境内走国内 DNS;proxy-server-nameserver 解析节点自身域名走国内直连,避免回环
     # - fake-ip 防污染。ipv6 关闭,减少 IPv6 直连泄漏面
+    # - direct_domains:管理域名(面板/订阅/节点)加入 fake-ip-filter,拿真实 IP,连着 VPN 也能直连打开
+    fake_ip_filter = ["*.lan", "+.local", "localhost", "*.localdomain",
+                      "+.pool.ntp.org", "time.*.com", "*.msftconnecttest.com"]
+    for d in (direct_domains or []):
+        if d:
+            fake_ip_filter += [d, f"+.{d}"]
     return {
         "enable": True, "ipv6": False, "listen": "0.0.0.0:1053",
         "enhanced-mode": "fake-ip", "fake-ip-range": "198.18.0.1/16",
-        "fake-ip-filter": ["*.lan", "+.local", "localhost", "*.localdomain",
-                           "+.pool.ntp.org", "time.*.com", "*.msftconnecttest.com"],
+        "fake-ip-filter": fake_ip_filter,
         "default-nameserver": ["223.5.5.5", "119.29.29.29"],
         "proxy-server-nameserver": ["https://223.5.5.5/dns-query"],
         "nameserver": ["https://223.5.5.5/dns-query", "https://doh.pub/dns-query"],
@@ -219,7 +224,7 @@ def build_dns():
     }
 
 
-def build_clash_config(proxies, userinfo):
+def build_clash_config(proxies, userinfo, mgmt_domain=None):
     rc = load_rules()
     proxy_names = [p["name"] for p in proxies]
     groups_cfg = rc.get("groups", ["🚀 手动选择", "♻️ 自动选择"])
@@ -237,6 +242,9 @@ def build_clash_config(proxies, userinfo):
             rules.append(f"GEOIP,{gi},{policy},no-resolve")
         for r in mod.get("rules", []):
             rules.append(r)
+    # 管理域名(面板/订阅/节点同域)强制直连 —— 连着 VPN 也能直接打开面板/更新订阅,不回环
+    if mgmt_domain:
+        rules.insert(0, f"DOMAIN-SUFFIX,{mgmt_domain},DIRECT")
     rules.append(f"MATCH,{final}")
 
     # 自动组优先级:UDP(HY2/TUIC 抗丢包快)> Reality TCP > 普通 TCP
@@ -263,7 +271,7 @@ def build_clash_config(proxies, userinfo):
         "ipv6": False,
         "mixed-port": 7890, "allow-lan": True, "mode": "rule", "log-level": "info",
         "external-controller": "127.0.0.1:9090",
-        "dns": build_dns(),
+        "dns": build_dns([mgmt_domain] if mgmt_domain else None),
         "proxies": proxies,
         "proxy-groups": [grp(g) for g in groups_cfg],
         "rules": rules,
@@ -286,7 +294,8 @@ def get_sub(username):
         proxies = extract_proxies(resp.text)   # 兼容 Clash YAML 与 s-ui 原生 base64 URI
         if not proxies:
             return Response("No proxies found", status=502)
-        return build_clash_config(proxies, resp.headers.get("Subscription-Userinfo", ""))
+        mgmt = (request.host or "").split(":")[0]  # 面板/订阅域名 = 请求 Host,强制直连
+        return build_clash_config(proxies, resp.headers.get("Subscription-Userinfo", ""), mgmt)
     except Exception as e:
         return Response(f"Error: {e}", status=500)
 
