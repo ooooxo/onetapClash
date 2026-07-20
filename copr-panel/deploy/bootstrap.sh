@@ -53,11 +53,13 @@ _prompt_config(){
   local dohard="y"
   [[ -t 0 ]] && read -rp "  自动把 hy2 节点切到域名证书?(需 s-ui 管理员账号)[Y/n]: " dohard
   if [[ "$(lc "${dohard:-y}")" != "n" ]]; then
-    local sp spath sip
+    local sp spath sip pdom host
     sp="$(/usr/local/s-ui/sui setting show 2>/dev/null | awk -F'[: \t]+' '/Panel port/{print $(NF)}')"
     spath="$(/usr/local/s-ui/sui setting show 2>/dev/null | awk -F'Panel path:' '/Panel path/{gsub(/[ \t]/,"",$2);print $2}')"
+    pdom="$(/usr/local/s-ui/sui setting show 2>/dev/null | awk -F'Panel Domain:' '/Panel Domain/{gsub(/[ \t]/,"",$2);print $2}')"
     sip="$(curl -s4 --max-time 5 https://api.ipify.org 2>/dev/null || echo 127.0.0.1)"
-    [[ -z "$SUI_API" && -n "$sp" ]] && SUI_API="http://${sip}:${sp}${spath:-/app/}"
+    host="${pdom:-$sip}"   # s-ui 设了面板域名时,用 IP 访问会被 Host 守卫 403,故优先用域名
+    [[ -z "$SUI_API" && -n "$sp" ]] && SUI_API="http://${host}:${sp}${spath:-/app/}"
     _ask SUI_API  "s-ui 面板 API 地址" "${SUI_API:-http://127.0.0.1:9000/app/}"
     _ask SUI_USER "s-ui 管理员账号" ""
     _ask SUI_PASS "s-ui 管理员密码" "" secret
@@ -205,24 +207,61 @@ EOF
   nginx -t && systemctl reload nginx && ok "nginx 就绪(订阅前端)" || die "nginx 校验失败"
 }
 
-# ── 7) 域名硬化 hy2 节点(s-ui 存 inline PEM,经面板应用最稳)────────────────
+# ── 7) 域名硬化 hy2 节点(s-ui v1.2+ API:POST api/save object=tls)──────────────
+_harden_manual(){
+  cat <<EOF
+   → 手动(s-ui 面板 → 入站「${HY2_TAG}」→ TLS):server_name=${DOMAIN};
+     证书=${TLS_CERT} 内容;私钥=${TLS_KEY} 内容;关闭 insecure/自签指纹。保存即热重载。
+EOF
+}
 _harden_hy2(){
   echo ""; log "域名硬化 Hysteria2 节点(TLS → ${DOMAIN} + 真实证书)"
-  [[ -f "$TLS_CERT" && -f "$TLS_KEY" ]] \
-    && ok "域名证书已就位: $TLS_CERT" \
-    || warn "尚无 $TLS_CERT(证书步骤未成功);先修好证书再做本步"
-  cat <<EOF
-   s-ui 把证书以 inline PEM 存在库里、sing-box 核心内嵌于 sui 进程,
-   最稳的应用方式是在面板点一下(避免盲改库弄坏现有节点/用户):
-     s-ui 面板 → 入站「${HY2_TAG}」→ TLS:
-       · server_name = ${DOMAIN}
-       · 证书 = 粘贴 ${TLS_CERT} 内容(或指向该路径)
-       · 私钥 = 粘贴 ${TLS_KEY} 内容
-       · 关闭 insecure / 自签公钥指纹
-     保存后 s-ui 自动重载 sing-box;客户端订阅里 hy2 的 sni=${DOMAIN}、
-     skip-cert-verify=false 即为域名硬化生效。
-   (如需我把这步也做成全自动,给我 s-ui 管理员账号或授权我核对你的 s-ui 版本 API。)
-EOF
+  [[ -f "$TLS_CERT" && -f "$TLS_KEY" ]] || { warn "证书缺失($TLS_CERT),跳过;先修好证书再重跑"; return; }
+  if [[ -z "$SUI_API" || -z "$SUI_USER" || -z "$SUI_PASS" ]]; then
+    warn "未提供 s-ui API/账号 → 打印手动步骤:"; _harden_manual; return
+  fi
+  local db=/usr/local/s-ui/db/s-ui.db jar="$BK/sui.cookie" base="${SUI_API%/}"
+  # hy2 入站的 tls_id(先按 tag,再按 type 兜底)
+  local tls_id
+  tls_id="$(sqlite3 "$db" "select tls_id from inbounds where tag='${HY2_TAG}' limit 1;" 2>/dev/null)"
+  [[ -z "$tls_id" ]] && tls_id="$(sqlite3 "$db" "select tls_id from inbounds where type='hysteria2' limit 1;" 2>/dev/null)"
+  [[ -z "$tls_id" ]] && { warn "找不到 hy2 入站(tag=${HY2_TAG})的 tls_id"; _harden_manual; return; }
+  # 登录(user/pass 表单,cookie=s-ui)
+  local lr; lr="$(curl -sS -c "$jar" --max-time 15 -X POST "${base}/api/login" \
+      --data-urlencode "user=${SUI_USER}" --data-urlencode "pass=${SUI_PASS}" 2>/dev/null || true)"
+  if ! echo "$lr" | jq -e '.success==true' >/dev/null 2>&1; then
+    warn "s-ui 登录失败(检查 SUI_API 是否含面板路径/域名、账号密码): $(echo "$lr" | jq -r '.msg // "无有效响应"' 2>/dev/null)"
+    _harden_manual; return
+  fi
+  ok "s-ui 登录成功,读取 tls#${tls_id}..."
+  local cur; cur="$(curl -sS -b "$jar" --max-time 15 "${base}/api/tls" 2>/dev/null \
+      | jq -c --argjson id "$tls_id" '.obj.tls[] | select(.id==$id)' 2>/dev/null || true)"
+  [[ -z "$cur" || "$cur" == "null" ]] && { warn "读不到 tls#${tls_id}"; _harden_manual; return; }
+  # 取当前对象,只改:server_name/inline PEM(按行数组)/关 insecure;其余保留(save 覆盖整行)
+  local data
+  data="$(jq -n --argjson cur "$cur" --arg d "$DOMAIN" \
+      --rawfile cert "$TLS_CERT" --rawfile key "$TLS_KEY" '
+      $cur
+      | .server.enabled     = true
+      | .server.server_name = $d
+      | .server.alpn        = ((.server.alpn // []) | if length>0 then . else ["h3"] end)
+      | .server.certificate = ($cert | rtrimstr("\n") | split("\n"))
+      | .server.key         = ($key  | rtrimstr("\n") | split("\n"))
+      | del(.server.certificate_path, .server.key_path, .server.reality, .server.acme)
+      | .client.server_name = $d
+      | .client.insecure    = false
+      | del(.client.certificate, .client.certificate_path, .client.certificate_public_key_sha256, .client.reality)
+    ' 2>/dev/null || true)"
+  [[ -z "$data" ]] && { warn "构造 TLS 载荷失败(jq)"; _harden_manual; return; }
+  local sr; sr="$(curl -sS -b "$jar" --max-time 20 -X POST "${base}/api/save" \
+      --data-urlencode "object=tls" --data-urlencode "action=edit" \
+      --data-urlencode "data=${data}" 2>/dev/null || true)"
+  if echo "$sr" | jq -e '.success==true' >/dev/null 2>&1; then
+    ok "hy2 节点 TLS 已切到 ${DOMAIN} + 真实证书,s-ui 已自动热重载入站"
+  else
+    warn "保存失败: $(echo "$sr" | jq -r '.msg // "未知(可 POST api/restartSb 或手动)"' 2>/dev/null)"
+    _harden_manual
+  fi
 }
 
 # ── 8) ufw + 自检 ─────────────────────────────────────────────────────────────
