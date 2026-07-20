@@ -109,6 +109,10 @@ def build_clash_config(proxies, userinfo):
         return {"name": name, "type": "select", "proxies": [*auto_order, "DIRECT"]}
 
     config = {
+        # ipv6=false:服务器只有 IPv4 时,双栈客户端会用原生 IPv6 直连绕过代理→泄漏真实 IPv6。
+        # 全局关 IPv6(+ DNS 不解析 AAAA)使客户端不产生 v6 目标,强制走 v4 代理,堵 IPv6 泄漏。
+        # 注:WebRTC/IPv6 泄漏的防护在客户端 TUN 模式下才完全生效(系统代理模式会被绕过)。
+        "ipv6": False,
         "mixed-port": 7890, "allow-lan": True, "mode": "rule", "log-level": "info",
         "external-controller": "127.0.0.1:9090",
         "dns": build_dns(),
