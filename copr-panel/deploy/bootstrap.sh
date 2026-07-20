@@ -43,6 +43,17 @@ _ask(){  # _ask VAR "提示" "默认" [secret];已由 config.env 提供则不问
   printf -v "$var" '%s' "$input"
 }
 
+_detect_panel_url(){  # → http://<面板域名或公网IP>:<端口><路径>
+  local sp spath pdom sip host ss
+  ss="$(/usr/local/s-ui/sui setting show 2>/dev/null || true)"
+  sp="$(printf '%s\n' "$ss"    | awk -F'[: \t]+' '/Panel port/{print $(NF)}')"
+  spath="$(printf '%s\n' "$ss" | awk -F'Panel path:'   '/Panel path/{gsub(/[ \t]/,"",$2);print $2}')"
+  pdom="$(printf '%s\n' "$ss"  | awk -F'Panel Domain:' '/Panel Domain/{gsub(/[ \t]/,"",$2);print $2}')"
+  sip="$(curl -s4 --max-time 5 https://api.ipify.org 2>/dev/null || echo 127.0.0.1)"
+  host="${pdom:-$sip}"   # s-ui 设了面板域名时,用 IP 访问会被 Host 守卫 403,故优先用域名
+  [[ -n "$sp" ]] && echo "http://${host}:${sp}${spath:-/app/}"
+}
+
 _prompt_config(){
   echo -e "${C}=== 部署参数(回车=默认/检测值)===${N}"
   _ask DOMAIN "对外域名(已解析到本机)" ""
@@ -53,13 +64,7 @@ _prompt_config(){
   local dohard="y"
   [[ -t 0 ]] && read -rp "  自动把 hy2 节点切到域名证书?(需 s-ui 管理员账号)[Y/n]: " dohard
   if [[ "$(lc "${dohard:-y}")" != "n" ]]; then
-    local sp spath sip pdom host
-    sp="$(/usr/local/s-ui/sui setting show 2>/dev/null | awk -F'[: \t]+' '/Panel port/{print $(NF)}')"
-    spath="$(/usr/local/s-ui/sui setting show 2>/dev/null | awk -F'Panel path:' '/Panel path/{gsub(/[ \t]/,"",$2);print $2}')"
-    pdom="$(/usr/local/s-ui/sui setting show 2>/dev/null | awk -F'Panel Domain:' '/Panel Domain/{gsub(/[ \t]/,"",$2);print $2}')"
-    sip="$(curl -s4 --max-time 5 https://api.ipify.org 2>/dev/null || echo 127.0.0.1)"
-    host="${pdom:-$sip}"   # s-ui 设了面板域名时,用 IP 访问会被 Host 守卫 403,故优先用域名
-    [[ -z "$SUI_API" && -n "$sp" ]] && SUI_API="http://${host}:${sp}${spath:-/app/}"
+    [[ -z "$SUI_API" ]] && SUI_API="$(_detect_panel_url)"
     _ask SUI_API  "s-ui 面板 API 地址" "${SUI_API:-http://127.0.0.1:9000/app/}"
     _ask SUI_USER "s-ui 管理员账号" ""
     _ask SUI_PASS "s-ui 管理员密码" "" secret
@@ -154,27 +159,27 @@ EOF
     || { warn "converter 异常"; journalctl -u sui-converter -n 20 --no-pager; }
 }
 
-# ── 5) 回填 users.json:s-ui 每个 client → 其原生订阅 → converter /get/<name> ──
+# ── 5) 回填 users.json:s-ui 每个 client.name → 原生订阅 → converter /get/<name> ──
 _seed_users(){
   local db=/usr/local/s-ui/db/s-ui.db
   [[ -f "$db" ]] || { warn "无 s-ui DB,跳过用户回填"; return; }
   log "从 s-ui 回填 converter 用户映射..."
-  local users_json="$CONV_DIR/users.json"
+  local users_json="$CONV_DIR/users.json" base="${SUI_SUB_BASE%/}/"
+  mkdir -p "$CONV_DIR"
   [[ -f "$users_json" ]] && cp "$users_json" "$BK/users.json.pre"
-  # s-ui client 的订阅 token 在 clients 表;取 name 与 subscription 字段构造 URL
-  # 不同 s-ui 版本字段名可能不同,取不到时保留原 users.json 不覆盖
-  local rows; rows="$(sqlite3 "$db" "select name from clients where enable=1;" 2>/dev/null || true)"
-  [[ -z "$rows" ]] && { warn "读不到 clients,跳过(可稍后在面板/手动填 users.json)"; return; }
-  # 说明:s-ui 原生订阅形如 ${SUI_SUB_BASE}<token>;token 需从面板取。
-  # 这里仅确保 users.json 存在且合法,具体 URL 由面板「订阅」或手动补全。
-  [[ -f "$users_json" ]] || echo '{}' > "$users_json"
-  python3 - "$users_json" <<'PY' || true
-import json,sys
-f=sys.argv[1]
-try: json.load(open(f))
-except Exception: open(f,"w").write("{}")
-PY
-  ok "users.json 就位($users_json);逐用户订阅 URL 见文末说明"
+  # s-ui client.name 即原生订阅标识:原生订阅 = ${SUI_SUB_BASE}<name>(base64 URI 列表,converter 会解析)
+  local map
+  map="$(sqlite3 "$db" "select name from clients where enable=1;" 2>/dev/null \
+    | jq -R -s --arg base "$base" '
+        split("\n") | map(select(length>0))
+        | reduce .[] as $n ({}; . + { ($n): { url: ($base + $n) } })' 2>/dev/null || true)"
+  if [[ -z "$map" || "$map" == "null" || "$map" == "{}" ]]; then
+    warn "读不到启用中的 clients;users.json 保持不变"
+    [[ -f "$users_json" ]] || echo '{}' > "$users_json"
+    return
+  fi
+  echo "$map" > "$users_json"
+  ok "users.json 回填 $(echo "$map" | jq 'length') 个用户 → 订阅 https://${DOMAIN}/get/<name>"
 }
 
 # ── 6) nginx 订阅前端(域名 TLS;/get 公开订阅)───────────────────────────────
@@ -291,10 +296,20 @@ main(){
   _firewall
   _selfcheck
   echo ""; ok "完成。备份目录: $BK"
-  echo "  订阅:      https://${DOMAIN}/get/<user>"
-  echo "  s-ui 面板: 见 s-ui 自身端口(默认安装时设定)"
-  echo "  逐用户订阅: 在 s-ui 面板复制该用户「原生订阅链接」,POST 到 converter:"
-  echo "    curl -X POST http://${CONV_ADDR}/admin/users/<name> -H 'X-Admin-Secret: ${CONV_ADMIN_SECRET}' \\"
-  echo "         -H 'Content-Type: application/json' -d '{\"url\":\"${SUI_SUB_BASE}<token>\"}'"
+  local div="────────────────────────────────────────────────────────"
+  local panel="${SUI_API:-$(_detect_panel_url)}"
+  echo -e "${C}${div}${N}"
+  echo -e "  ${G}▍s-ui 面板(浏览器打开这个网址登录):${N}"
+  echo -e "      ${B:-}${panel:-http://<你的域名>:9000/app/}"
+  echo -e "  ${G}▍订阅前端:${N} https://${DOMAIN}/get/<用户名>"
+  if [[ -f "$CONV_DIR/users.json" ]]; then
+    local names; names="$(jq -r 'keys[]' "$CONV_DIR/users.json" 2>/dev/null || true)"
+    if [[ -n "$names" ]]; then
+      echo -e "  ${G}▍各用户订阅地址(直接导入 Clash Verge):${N}"
+      while IFS= read -r nm; do [[ -n "$nm" ]] && echo "      https://${DOMAIN}/get/${nm}"; done <<< "$names"
+    fi
+  fi
+  echo -e "  ${G}▍converter 管理密钥(改分流规则用,请保存):${N} ${CONV_ADMIN_SECRET}"
+  echo -e "${C}${div}${N}"
 }
 main "$@"
