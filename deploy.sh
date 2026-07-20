@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  VPN 一键部署  —  Hysteria2  &  Xray VLESS+Reality+uTLS
-#  支持：有域名（HTTPS订阅）/ 纯IP（HTTP订阅，自签证书）
+#  VPN 一键部署  —  Hysteria2（域名 TLS / 纯IP 自签）
+#  支持：有域名（HTTPS订阅 + 域名证书）/ 纯IP（HTTP订阅，自签证书）
 #  用法: sudo bash deploy.sh
 # =============================================================================
 if grep -qU $'\r' "$0" 2>/dev/null; then
@@ -50,7 +50,7 @@ main_menu(){
     echo -e "${B}${C}"
     echo "  +------------------------------------------+"
     echo "  |       VPN 一键管理面板                   |"
-    echo "  |  Hysteria2  +  Xray Reality  +  订阅API  |"
+    echo "  |     Hysteria2   +   订阅API 面板         |"
     echo "  +------------------------------------------+"
     echo -e "${N}"
 
@@ -99,8 +99,8 @@ do_install(){
 
   echo ""
   echo -e "  ${B}选择部署模式:${N}"
-  echo "  1) 有域名模式  - HTTPS订阅 + Xray Reality + Hysteria2"
-  echo "  2) 纯IP模式    - HTTP订阅  + 仅 Hysteria2（无需域名）"
+  echo "  1) 有域名模式  - HTTPS订阅 + Hysteria2（域名 TLS，更隐蔽安全，推荐）"
+  echo "  2) 纯IP模式    - HTTP订阅  + Hysteria2（自签证书，无需域名）"
   echo ""
   read -rp "  选择 [1/2]: " mode_choice
 
@@ -187,23 +187,15 @@ _install_ip_mode(){
 _install_domain_mode(){
   local pub_ip="$1"
   clear
-  echo -e "${B}=== 域名模式 ===${N}"; hr
+  echo -e "${B}=== 域名模式（Hysteria2 + 域名 TLS）===${N}"; hr
+  echo -e "  ${Y}Hysteria2 走域名 + Let's Encrypt 证书，客户端校验真实证书，比裸 IP 更隐蔽安全${N}"; echo ""
 
-  local domain xray_port hy2_port dest cert_mode
+  local domain hy2_port cert_mode
   read -rp "  域名（已解析到本机）: " domain
   [[ -z "$domain" ]] && die "域名不能为空"
 
-  read -rp "  Xray Reality端口 [回车随机]: " xray_port
-  [[ -z "$xray_port" ]] && xray_port=$(( RANDOM % 40000 + 10000 ))
-
-  read -rp "  Hysteria2端口 [回车随机]: " hy2_port
+  read -rp "  Hysteria2端口(UDP) [回车随机]: " hy2_port
   [[ -z "$hy2_port" ]] && hy2_port=$(( RANDOM % 40000 + 10000 ))
-  while [[ "$hy2_port" == "$xray_port" ]]; do
-    hy2_port=$(( RANDOM % 40000 + 10000 ))
-  done
-
-  read -rp "  Reality伪装域名 [默认 www.apple.com]: " dest
-  [[ -z "$dest" ]] && dest="www.apple.com"
 
   echo "  证书: 1) Let's Encrypt  2) 自签名"
   read -rp "  选择 [1/2，默认1]: " cert_mode
@@ -212,10 +204,11 @@ _install_domain_mode(){
   echo ""
   echo -e "  ${Y}参数确认:${N}"
   echo "  域名         : $domain"
-  echo "  Xray端口     : $xray_port"
-  echo "  HY2端口      : $hy2_port"
-  echo "  伪装域名     : $dest"
+  echo "  HY2端口(UDP) : $hy2_port"
   echo "  证书         : $([ "$cert_mode" = "1" ] && echo "Let's Encrypt" || echo "自签名")"
+  echo "  订阅URL格式  : https://${domain}/sub?token=<TOKEN>"
+  echo ""
+  echo -e "  ${Y}提示：云安全组需提前放行 UDP ${hy2_port} 与 TCP 80/443（证书签发靠 80）${N}"
   echo ""
   read -rp "  开始安装? [Y/n]: " _yn
   [[ "${_yn,,}" == "n" ]] && return
@@ -223,26 +216,25 @@ _install_domain_mode(){
   hr
   _stop_old_services
   _pkg_install
-  _install_xray_bin
   _install_hy2_bin
-  _setup_certs "$domain" "$cert_mode"
-  _write_xray_config "$domain" "$xray_port" "$dest"
+  _setup_nginx domain "$domain"          # 先起 HTTP(80)，供 ACME http-01 校验
+  _setup_certs "$domain" "$cert_mode"    # 申请证书（webroot）
+  _setup_nginx domain "$domain"          # 证书就绪后补 HTTPS(443)
   _write_hy2_systemd
-  _setup_sub_api_domain "$domain" "$xray_port" "$hy2_port" "$cert_mode"
-  _setup_nginx domain "$domain"
-  _save_state_domain "$domain" "$pub_ip" "$xray_port" "$hy2_port" "$dest" "$cert_mode"
+  _setup_sub_api_domain "$domain" "$hy2_port" "$cert_mode"
+  _save_state_domain "$domain" "$pub_ip" "$hy2_port" "$cert_mode"
 
-  _firewall_open_ports_domain "$hy2_port" "$xray_port"
+  _firewall_open_ports_domain "$hy2_port"
   _seed_first_user "my-device"
 
   log "启动服务..."
-  for svc in xray hysteria2 sub-api nginx; do
+  for svc in hysteria2 sub-api nginx; do
     systemctl enable "$svc"
     systemctl restart "$svc" || true
   done
   sleep 2
 
-  for svc in xray hysteria2 sub-api nginx; do
+  for svc in hysteria2 sub-api nginx; do
     systemctl is-active --quiet "$svc" \
       && ok "$svc 运行中" \
       || warn "$svc 异常: journalctl -u $svc -n 20"
@@ -324,25 +316,23 @@ _firewall_open_ports_ip(){
 }
 
 _firewall_open_ports_domain(){
-  local hy2="$1" xray="$2"
+  local hy2="$1"
   echo ""
   echo -e "${Y}【云安全组 / 厂商控制台】必须放行：${N}"
   echo "     UDP ${hy2}     ← Hysteria2（QUIC）"
-  echo "     TCP ${xray}    ← Xray VLESS Reality"
-  echo "     TCP 80 / 443   ← HTTP(S) / 证书"
+  echo "     TCP 80 / 443   ← 订阅 HTTPS / 证书签发"
   echo ""
 
   if command -v ufw >/dev/null 2>&1; then
     log "写入 ufw 放行规则..."
     ufw allow "${hy2}/udp"   comment 'Hysteria2' 2>/dev/null || ufw allow "${hy2}/udp"
-    ufw allow "${xray}/tcp"  comment 'Xray'      2>/dev/null || ufw allow "${xray}/tcp"
     ufw allow 80/tcp  comment 'HTTP'  2>/dev/null || ufw allow 80/tcp
     ufw allow 443/tcp comment 'HTTPS' 2>/dev/null || ufw allow 443/tcp
     if ufw status 2>/dev/null | head -1 | grep -qi "Status: active"; then
-      ok "ufw 已启用，HY2/Xray/80/443 已生效"
+      ok "ufw 已启用，HY2/80/443 已生效"
     else
       ok "ufw 规则已写入（当前未 enable）。启用示例:"
-      echo "     sudo ufw allow OpenSSH && sudo ufw allow ${hy2}/udp && sudo ufw allow ${xray}/tcp && sudo ufw allow 80,443/tcp && sudo ufw enable"
+      echo "     sudo ufw allow OpenSSH && sudo ufw allow ${hy2}/udp && sudo ufw allow 80,443/tcp && sudo ufw enable"
     fi
   else
     warn "未找到 ufw。请: sudo apt-get install -y ufw"
@@ -351,36 +341,11 @@ _firewall_open_ports_domain(){
   if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null | grep -q running; then
     log "检测到 firewalld，正在放行端口..."
     firewall-cmd --permanent --add-port="${hy2}/udp"    2>/dev/null || true
-    firewall-cmd --permanent --add-port="${xray}/tcp"   2>/dev/null || true
     firewall-cmd --permanent --add-service=http         2>/dev/null || true
     firewall-cmd --permanent --add-service=https        2>/dev/null || true
     firewall-cmd --reload 2>/dev/null || true
-    ok "firewalld: 已放行 HY2 / Xray / http / https"
+    ok "firewalld: 已放行 HY2 / http / https"
   fi
-}
-
-_install_xray_bin(){
-  log "下载 Xray..."
-  local ver arch url tmpd
-  ver="$(curl -sL --max-time 10 https://api.github.com/repos/XTLS/Xray-core/releases/latest \
-         | jq -r '.tag_name' 2>/dev/null || echo "v25.3.6")"
-  case "$(uname -m)" in
-    x86_64)  arch="64"        ;;
-    aarch64) arch="arm64-v8a" ;;
-    *)       arch="64"        ;;
-  esac
-  url="https://github.com/XTLS/Xray-core/releases/download/${ver}/Xray-linux-${arch}.zip"
-  tmpd="$(mktemp -d)"
-  curl -sL --max-time 60 "$url" -o "$tmpd/xray.zip" || die "Xray 下载失败"
-  unzip -q "$tmpd/xray.zip" -d "$tmpd/x"
-  install -m0755 "$tmpd/x/xray" "$XBIN"
-  rm -rf "$tmpd"
-  mkdir -p /etc/xray
-  curl -sL --max-time 30 "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" \
-    -o /etc/xray/geoip.dat   2>/dev/null || true
-  curl -sL --max-time 30 "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" \
-    -o /etc/xray/geosite.dat 2>/dev/null || true
-  ok "Xray ${ver} 安装完成"
 }
 
 _install_hy2_bin(){
@@ -435,17 +400,25 @@ _gen_self_signed_cert_domain(){
 _setup_certs(){
   local domain="$1" mode="$2"
   if [[ "$mode" == "1" ]]; then
-    systemctl start nginx 2>/dev/null || true
-    log "申请 Let's Encrypt 证书..."
-    certbot certonly --nginx -d "$domain" \
-      --non-interactive --agree-tos \
-      --register-unsafely-without-email -q && {
-        mkdir -p /etc/ssl/vpn
-        ln -sf "/etc/letsencrypt/live/${domain}/fullchain.pem" /etc/ssl/vpn/cert.pem
-        ln -sf "/etc/letsencrypt/live/${domain}/privkey.pem"   /etc/ssl/vpn/key.pem
-        ok "Let's Encrypt 证书就绪"
-        return
-      } || warn "LE 证书失败，改用自签名"
+    systemctl reload nginx 2>/dev/null || systemctl start nginx 2>/dev/null || true
+    mkdir -p /var/www/html/.well-known/acme-challenge
+    # 已有未到期证书则直接复用，避免重复走 http-01 校验
+    if [[ -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]]; then
+      log "检测到已有 Let's Encrypt 证书，尝试续期（未到期则跳过）..."
+      certbot renew -q 2>/dev/null || true
+    else
+      log "申请 Let's Encrypt 证书 (webroot)..."
+      certbot certonly --webroot -w /var/www/html -d "$domain" \
+        --non-interactive --agree-tos --register-unsafely-without-email -q \
+        || warn "LE 证书失败（检查 80 端口/DNS/安全组），改用自签名"
+    fi
+    if [[ -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]]; then
+      mkdir -p /etc/ssl/vpn
+      ln -sf "/etc/letsencrypt/live/${domain}/fullchain.pem" /etc/ssl/vpn/cert.pem
+      ln -sf "/etc/letsencrypt/live/${domain}/privkey.pem"   /etc/ssl/vpn/key.pem
+      ok "Let's Encrypt 证书就绪"
+      return
+    fi
   fi
   _gen_self_signed_cert_domain "$domain"
 }
@@ -468,97 +441,6 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-}
-
-# ── Xray 配置 ─────────────────────────────────────────────────────────────────
-_write_xray_config(){
-  local domain="$1" port="$2" dest="$3"
-  mkdir -p /etc/xray "$LDIR" "$IDIR"
-  log "生成 Reality 密钥对..."
-  local kp privkey pubkey short_id
-  kp="$($XBIN x25519 2>/dev/null)"
-  privkey="$(echo "$kp" | awk '/Private/{print $3}')"
-  pubkey="$(echo  "$kp" | awk '/Public/{print $3}')"
-  short_id="$(openssl rand -hex 4)"
-  ok "pubkey = ${pubkey:0:24}..."
-
-  jq -n \
-    --arg priv "$privkey" --arg pub "$pubkey" \
-    --arg sid "$short_id" --arg dest "$dest" \
-    --argjson port "$port" \
-    '{xray_privkey:$priv, xray_pubkey:$pub, xray_short_id:$sid,
-      xray_dest:$dest, xray_port:$port}' > "$IDIR/xray-keys.json"
-
-  cat > "$XCFG" <<EOF
-{
-  "log": {
-    "loglevel": "warning",
-    "access": "${LDIR}/xray.log",
-    "error":  "${LDIR}/xray-err.log"
-  },
-  "inbounds": [{
-    "tag": "vless-reality",
-    "port": ${port},
-    "protocol": "vless",
-    "settings": {
-      "clients": [],
-      "decryption": "none"
-    },
-    "streamSettings": {
-      "network": "tcp",
-      "security": "reality",
-      "realitySettings": {
-        "show": false,
-        "dest": "${dest}:443",
-        "xver": 0,
-        "serverNames": ["${dest}"],
-        "privateKey": "${privkey}",
-        "shortIds": ["${short_id}"]
-      }
-    },
-    "sniffing": {"enabled": true, "destOverride": ["http","tls","quic"]}
-  }],
-  "outbounds": [
-    {"tag": "direct", "protocol": "freedom"},
-    {"tag": "block",  "protocol": "blackhole"}
-  ],
-  "routing": {
-    "domainStrategy": "IPIfNonMatch",
-    "rules": [{"type":"field","ip":["geoip:private"],"outboundTag":"direct"}]
-  }
-}
-EOF
-  cat > /etc/systemd/system/xray.service <<EOF
-[Unit]
-Description=Xray Server
-After=network.target
-
-[Service]
-User=nobody
-Environment=XRAY_LOCATION_ASSET=/etc/xray
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
-Restart=always
-RestartSec=3
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  mkdir -p "$LDIR"
-  touch "$LDIR/xray.log" "$LDIR/xray-err.log" 2>/dev/null || true
-  chown -R nobody:nogroup "$LDIR" 2>/dev/null || chown -R nobody:nobody "$LDIR"
-  chmod 755 /etc/xray
-  chown nobody:nogroup "$XCFG" 2>/dev/null || chown nobody:nobody "$XCFG"
-  chmod 600 "$XCFG"
-  [[ -f /etc/xray/geoip.dat ]]   && chown nobody:nogroup /etc/xray/geoip.dat   2>/dev/null && chmod 644 /etc/xray/geoip.dat
-  [[ -f /etc/xray/geosite.dat ]] && chown nobody:nogroup /etc/xray/geosite.dat 2>/dev/null && chmod 644 /etc/xray/geosite.dat
-  log "校验 Xray 配置..."
-  "$XBIN" run -config "$XCFG" -test || die "Xray 配置校验失败（见上）"
-  systemctl daemon-reload
-  ok "Xray Reality 配置完成"
 }
 
 # ── 重建 Hysteria2 配置（每次用户变动后调用）────────────────────────────────
@@ -663,13 +545,10 @@ EOF
 
 # ── 订阅 API（域名模式）──────────────────────────────────────────────────────
 _setup_sub_api_domain(){
-  local domain="$1" xray_port="$2" hy2_port="$3" cert_mode="$4"
+  local domain="$1" hy2_port="$2" cert_mode="$3"
   log "部署订阅 API (域名模式)..."
   mkdir -p "$SCFG" "$IDIR"
   [[ -f "$TFILE" ]] || echo '[]' > "$TFILE"
-
-  local xkeys="{}"
-  [[ -f "$IDIR/xray-keys.json" ]] && xkeys="$(cat "$IDIR/xray-keys.json")"
 
   # cert_mode 是字符串，skip_tls 当 cert_mode != "1" 时为 true
   local skip_tls
@@ -677,13 +556,10 @@ _setup_sub_api_domain(){
 
   jq -n \
     --arg host "$domain" --arg mode "domain" \
-    --argjson xray_port "$xray_port" \
     --argjson hy2_port "$hy2_port" \
     --argjson skip_tls "$skip_tls" \
-    --argjson xkeys "$xkeys" \
-    '{host:$host, mode:$mode, xray_port:$xray_port,
-      hy2_port:$hy2_port, skip_tls:$skip_tls,
-      xray_enabled:true} + $xkeys' > "$PFILE"
+    '{host:$host, mode:$mode, hy2_port:$hy2_port,
+      skip_tls:$skip_tls, xray_enabled:false}' > "$PFILE"
 
   _write_app_py
   python3 -m venv "$SCFG/venv"
@@ -745,11 +621,9 @@ def build_yaml(p, entry):
     uuid       = entry["uuid"]
     hy2_port   = p.get("hy2_port", 8443)
     skip_tls   = p.get("skip_tls", False)
-    xray_en    = p.get("xray_enabled", False)
 
     # 固定展示名（与 Clash Verge 参考配置一致，不随用户备注变化）
     NAME_H2 = "🚀 Hysteria2 极速"
-    NAME_VLESS = "🌐 VLESS Reality"
     GROUP_MANUAL = "🔧 手动选择"
     GROUP_MEDIA = "📺 流媒体"
 
@@ -768,30 +642,6 @@ def build_yaml(p, entry):
 
     proxy_blocks = [hy2_block]
     proxy_names  = [NAME_H2]
-
-    if xray_en:
-        xray_port = p.get("xray_port", 443)
-        pubkey    = p.get("xray_pubkey",   "")
-        short_id  = p.get("xray_short_id", "")
-        dest      = p.get("xray_dest", "www.apple.com")
-        vless_block = (
-            f"  - name: {NAME_VLESS}\n"
-            f"    type: vless\n"
-            f"    server: {host}\n"
-            f"    port: {xray_port}\n"
-            f"    uuid: {uuid}\n"
-            f"    network: tcp\n"
-            f"    tls: true\n"
-            f"    udp: true\n"
-            f"    flow: xtls-rprx-vision\n"
-            f"    servername: {dest}\n"
-            f"    client-fingerprint: chrome\n"
-            f"    reality-opts:\n"
-            f"      public-key: {pubkey}\n"
-            f"      short-id: {short_id}"
-        )
-        proxy_blocks.append(vless_block)
-        proxy_names.append(NAME_VLESS)
 
     proxies_yaml = "\n\n".join(proxy_blocks)
     names_yaml = "\n".join(f"      - {n}" for n in proxy_names)
@@ -1036,7 +886,7 @@ _check_api_health(){
   return 1
 }
 
-# ── 安装阶段：首个用户（仅写配置，不重启服务；供启动前写入 HY2/Xray）────────
+# ── 安装阶段：首个用户（仅写配置，不重启服务；供启动前写入 HY2）──────────────
 _seed_first_user(){
   local note="${1:-my-device}"
   [[ -f "$SFILE" ]] || die "_seed_first_user: 未找到 state.json"
@@ -1053,18 +903,8 @@ _seed_first_user(){
   echo "$tokens" > "$TFILE"
   chmod 640 "$TFILE"
 
-  local mode
-  mode="$(jq -r '.mode' "$SFILE")"
-  if [[ "$mode" == "domain" && -f "$XCFG" ]]; then
-    local tmp; tmp="$(mktemp)"
-    jq --arg uuid "$uuid" \
-      '.inbounds[0].settings.clients += [{"id":$uuid,"email":$uuid,"flow":"xtls-rprx-vision"}]' \
-      "$XCFG" > "$tmp" && mv "$tmp" "$XCFG"
-    chown nobody:nogroup "$XCFG" 2>/dev/null || chown nobody:nobody "$XCFG"
-    chmod 600 "$XCFG"
-  fi
   _rebuild_hy2_config
-  ok "首个用户 UUID 已写入 Hysteria2 / Xray(域名模式)"
+  ok "首个用户 UUID 已写入 Hysteria2"
 }
 
 _print_subscription_url_for_first_user(){
@@ -1090,7 +930,7 @@ _print_subscription_url_for_first_user(){
 # ── 安装结束：本机连通性自检 ─────────────────────────────────────────────────
 _connectivity_test(){
   [[ -f "$SFILE" ]] || { warn "无 state.json，跳过自检"; return 1; }
-  local mode hy2_port xray_port sub_port host fail=0
+  local mode hy2_port sub_port host fail=0
   mode="$(jq -r '.mode' "$SFILE")"
   hy2_port="$(jq -r '.hy2_port' "$SFILE")"
   host="$(jq -r '.host' "$SFILE")"
@@ -1117,22 +957,6 @@ _connectivity_test(){
   else
     warn "FAIL: nginx 未运行 — journalctl -u nginx -n 40"
     fail=1
-  fi
-
-  if [[ "$mode" == "domain" ]]; then
-    xray_port="$(jq -r '.xray_port' "$SFILE")"
-    if systemctl is-active --quiet xray; then
-      ok "PASS: xray.service 运行中"
-    else
-      warn "FAIL: xray 未运行 — journalctl -u xray -n 40"
-      fail=1
-    fi
-    if ss -tlnp 2>/dev/null | grep -q ":${xray_port} "; then
-      ok "PASS: Xray TCP 端口 ${xray_port} 正在监听"
-    else
-      warn "FAIL: 未检测到 TCP :${xray_port} — ss -tlnp"
-      fail=1
-    fi
   fi
 
   if ss -ulnp 2>/dev/null | grep -q ":${hy2_port} "; then
@@ -1182,17 +1006,17 @@ _save_state_ip(){
 }
 
 _save_state_domain(){
-  local domain="$1" ip="$2" xray_port="$3" hy2_port="$4" dest="$5" cert_mode="$6"
+  local domain="$1" ip="$2" hy2_port="$3" cert_mode="$4"
   mkdir -p "$IDIR"
   jq -n \
     --arg host "$domain" --arg mode "domain" --arg ip "$ip" \
-    --argjson xray_port "$xray_port" \
     --argjson hy2_port "$hy2_port" \
-    --arg dest "$dest" --arg cert_mode "$cert_mode" \
+    --arg cert_mode "$cert_mode" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{host:$host, mode:$mode, server_ip:$ip, xray_port:$xray_port,
-      hy2_port:$hy2_port, xray_dest:$dest, cert_mode:$cert_mode, installed_at:$ts}' \
+    '{host:$host, mode:$mode, server_ip:$ip,
+      hy2_port:$hy2_port, cert_mode:$cert_mode, installed_at:$ts}' \
     > "$SFILE"
+  cp "$PFILE" "$SFILE.pfile.bak" 2>/dev/null || true
 }
 
 _wait_port(){
@@ -1226,17 +1050,7 @@ create_user(){
   echo "$tokens" > "$TFILE"
   chmod 640 "$TFILE"
 
-  # Xray（域名模式）
   local mode; mode="$(jq -r '.mode' "$SFILE")"
-  if [[ "$mode" == "domain" && -f "$XCFG" ]]; then
-    local tmp; tmp="$(mktemp)"
-    jq --arg uuid "$uuid" \
-      '.inbounds[0].settings.clients += [{"id":$uuid,"email":$uuid,"flow":"xtls-rprx-vision"}]' \
-      "$XCFG" > "$tmp" && mv "$tmp" "$XCFG"
-    chown nobody:nogroup "$XCFG" 2>/dev/null || chown nobody:nobody "$XCFG"
-    chmod 600 "$XCFG"
-    systemctl reload xray 2>/dev/null || systemctl restart xray 2>/dev/null || true
-  fi
 
   # Hysteria2 — 重建配置并重启
   _rebuild_hy2_config
@@ -1342,16 +1156,6 @@ revoke_user(){
   jq --arg t "$found_token" '[.[] | select(.token != $t)]' "$TFILE" > "$tmp"
   mv "$tmp" "$TFILE"; chmod 640 "$TFILE"
 
-  if [[ -f "$XCFG" ]]; then
-    tmp="$(mktemp)"
-    jq --arg uuid "$found_uuid" \
-      '.inbounds[0].settings.clients = [.inbounds[0].settings.clients[] | select(.id != $uuid)]' \
-      "$XCFG" > "$tmp" && mv "$tmp" "$XCFG"
-    chown nobody:nogroup "$XCFG" 2>/dev/null || chown nobody:nobody "$XCFG"
-    chmod 600 "$XCFG"
-    systemctl reload xray 2>/dev/null || true
-  fi
-
   _rebuild_hy2_config
   systemctl restart hysteria2 || true
   ok "已吊销: ${found_uuid:0:8}..."
@@ -1362,7 +1166,7 @@ revoke_user(){
 # ═══════════════════════════════════════════════════════════════════════════════
 show_status(){
   clear; echo -e "${B}=== 服务状态 ===${N}"; hr
-  for svc in xray hysteria2 sub-api nginx; do
+  for svc in hysteria2 sub-api nginx; do
     local st
     systemctl is-active --quiet "$svc" 2>/dev/null \
       && st="${G}[运行中]${N}" || st="${R}[已停止]${N}"
@@ -1398,26 +1202,14 @@ show_info(){
     echo -e "  ${B}订阅URL格式:${N}"
     echo "  http://${host}:${sub_port}/sub?token=<TOKEN>"
   else
-    local xray_port hy2_port
-    xray_port="$(jq -r '.xray_port' "$SFILE")"
+    local hy2_port
     hy2_port="$(jq  -r '.hy2_port'  "$SFILE")"
-    local pubkey short_id dest
-    pubkey="$(jq   -r '.xray_pubkey'   "$PFILE" 2>/dev/null || echo N/A)"
-    short_id="$(jq -r '.xray_short_id' "$PFILE" 2>/dev/null || echo N/A)"
-    dest="$(jq     -r '.xray_dest'     "$PFILE" 2>/dev/null || echo N/A)"
-
-    echo -e "  ${B}Xray VLESS + Reality + uTLS (chrome)${N}"
-    echo "  地址      : $host"
-    echo "  端口      : $xray_port (TCP)"
-    echo "  流控      : xtls-rprx-vision"
-    echo "  伪装域名  : $dest"
-    echo "  PublicKey : $pubkey"
-    echo "  ShortID   : $short_id"
-    hr
-    echo -e "  ${B}Hysteria2${N}"
+    echo -e "  ${B}Hysteria2（域名模式 + TLS）${N}"
     echo "  地址      : $host"
     echo "  端口      : $hy2_port (UDP/QUIC)"
     echo "  密码      : <用户UUID>"
+    echo "  SNI       : $host"
+    echo "  证书      : Let's Encrypt（客户端校验真实证书，skip-cert-verify=false）"
     hr
     echo -e "  ${B}订阅URL格式:${N}"
     echo "  https://${host}/sub?token=<TOKEN>"
@@ -1431,7 +1223,7 @@ show_info(){
 
 svc_restart(){
   log "重启所有服务..."
-  for svc in xray hysteria2 sub-api nginx; do
+  for svc in hysteria2 sub-api nginx; do
     systemctl restart "$svc" 2>/dev/null \
       && ok "$svc 已重启" || warn "$svc 重启失败"
   done

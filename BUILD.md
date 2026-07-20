@@ -2,6 +2,8 @@
 
 面向 Debian/Ubuntu，**root** 执行：`sudo bash deploy.sh`
 
+只部署 **Hysteria2**（QUIC/UDP）。域名模式走 **真实域名 + Let's Encrypt 证书**，客户端校验真证书，比裸 IP 更隐蔽安全。已移除 Xray/VLESS（TCP）。
+
 ## 架构总览
 
 ```mermaid
@@ -13,56 +15,56 @@ flowchart LR
     Nginx[Nginx_80_443_or_subport]
     SubAPI[sub-api_gunicorn_8080]
     HY2[Hysteria2_UDP]
-    XR[Xray_TCP_Reality]
   end
   Clash -->|HTTPS_or_HTTP| Nginx
   Nginx --> SubAPI
-  Clash --> HY2
-  Clash --> XR
+  Clash -->|QUIC_UDP| HY2
 ```
 
 | 组件 | 作用 | 监听 |
 |------|------|------|
 | **Nginx** | 反代订阅 `/sub`、`/health` 到本机 gunicorn | 域名模式 80/443；IP 模式为所选 `sub_port` |
 | **sub-api** | Flask 生成 Clash YAML | `127.0.0.1:8080` |
-| **Hysteria2** | QUIC 代理，密码为用户 UUID | `hy2_port` UDP |
-| **Xray** | VLESS + REALITY（仅域名模式） | `xray_port` TCP |
+| **Hysteria2** | QUIC 代理，密码为用户 UUID；域名模式用 LE 证书，SNI=域名 | `hy2_port` UDP |
 
 状态与数据目录：`/opt/vpn-stack/`（`state.json`、`tokens.json`、`params.json`、`sub-api/app.py`）。
 
-## 安装流程（脚本实际顺序）
+## 安装流程（域名模式，脚本实际顺序）
 
-1. 交互选择 **域名模式** 或 **纯 IP 模式**，输入端口等参数。
-2. `apt` 安装依赖（含 `nginx`、`ufw`、`python3` 等），下载 **Xray / Hysteria2** 二进制。
-3. 生成证书（Let's Encrypt 或自签）。
-4. 写入 **Xray** 配置：`Environment=XRAY_LOCATION_ASSET=/etc/xray`，日志目录属主 `nobody`，`xray run -config ... -test` 通过后才继续。
-5. 部署 **sub-api**（venv + gunicorn）。
-6. 配置 **Nginx** 反代。
-7. 写入 **`state.json`**，**ufw 放行**（若已安装 ufw）。
-8. **`_seed_first_user`**：写入首个用户到 `tokens.json`、更新 Xray `clients`、`_rebuild_hy2_config`（HY2 使用 **string masquerade**，避免反代自身域名导致报错）。
-9. **启动** `xray`（域名） / `hysteria2` / `sub-api` / `nginx`。
-10. **`_connectivity_test`**：检查 systemd、`ss` 监听、`/health`、`/sub` YAML。
-11. 打印 **首个用户订阅 URL**。
+1. 交互输入 **域名**、**Hysteria2 端口(UDP)**、证书方式（LE / 自签）。
+2. `apt` 安装依赖（`nginx`、`certbot`、`ufw`、`python3` 等），下载 **Hysteria2** 二进制。
+3. 先起 **Nginx(80)** → `certbot certonly --webroot` 申请证书（已有未到期证书则复用/续期）→ 补 **Nginx(443)**。
+4. 写入 **Hysteria2** systemd + 配置（`/etc/ssl/vpn/cert.pem` 指向 LE `fullchain`，`skip-cert-verify=false`）。
+5. 部署 **sub-api**（venv + gunicorn），`py_compile` 通过才继续。
+6. 写入 **`state.json` / `params.json`**，**ufw 放行**（若已安装 ufw）。
+7. **`_seed_first_user`**：写入首个用户到 `tokens.json`、`_rebuild_hy2_config`（HY2 用 string 伪装 `content: "OK"`）。
+8. **启动** `hysteria2` / `sub-api` / `nginx`。
+9. **`_connectivity_test`**：检查 systemd、`ss` UDP 监听、`/health`、`/sub` YAML。
+10. 打印 **首个用户订阅 URL**：`https://<域名>/sub?token=<TOKEN>`。
+
+纯 IP 模式类似，但用自签证书、HTTP 订阅（`http://<IP>:<sub_port>/sub?token=...`），`skip-cert-verify=true`。
 
 ## 云安全组（必做）
 
 脚本无法修改云厂商控制台，**必须在安全组放行**：
 
 - **Hysteria2**：与 `state.json` 中 `hy2_port` 一致的 **UDP** 入站。
-- **Xray（域名模式）**：`xray_port` 的 **TCP** 入站。
-- **订阅**：域名模式 **TCP 80/443**；IP 模式为 **`sub_port` 的 TCP**。
+- **域名模式订阅 / 证书**：**TCP 80/443**（证书 http-01 校验靠 80）。
+- **IP 模式订阅**：`sub_port` 的 **TCP** 入站。
 
 仅放行 TCP 不放行 UDP 会导致 **Hysteria2 一直 timeout**。
 
+> **与其他面板共存**：若机器上已有 s-ui / sing-box 等占用 UDP 443，务必给 Hysteria2 选一个**不同的 UDP 端口**，避免 `bind: address already in use`。
+
 ## 常见问题
 
-### Xray 起不来（exit 23）
+### Hysteria2 起不来：`bind: address already in use`
 
-已处理：日志目录属主、`XRAY_LOCATION_ASSET`、`config.json` 属主 `nobody`、安装时执行配置测试。若仍失败：`journalctl -u xray -n 50`。
+`hy2_port` 被别的服务（如 s-ui 的 UDP 443）占用。换一个 UDP 端口重装，或停掉占用方。
 
-### Hysteria2 报 HTTP reverse proxy / masquerade
+### 证书申请失败
 
-已处理：域名模式不再对 `https://本机域名` 做 proxy masquerade，改为与 IP 模式一致的 string 伪装。
+`certbot --webroot` 需要 **80 端口从公网可达**（云安全组 + DNS 解析到本机）。失败会自动降级自签名（客户端需 `skip-cert-verify=true`）。
 
 ### 订阅 502
 
@@ -74,4 +76,4 @@ gunicorn 未监听 `127.0.0.1:8080`：`systemctl status sub-api`，`journalctl -
 
 ## 卸载
 
-菜单选项 **6** 或参考脚本中 `do_uninstall`（会删除 `/opt/vpn-stack`、`/usr/local/bin/xray`、`hysteria` 等）。
+菜单选项 **6** 或参考脚本中 `do_uninstall`（删除 `/opt/vpn-stack`、`/usr/local/bin/hysteria`，并清理旧的 `/usr/local/bin/xray`、`/etc/xray`）。
