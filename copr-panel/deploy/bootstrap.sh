@@ -14,23 +14,56 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# ── 加载配置 ──────────────────────────────────────────────────────────────────
-[[ -f config.env ]] || { echo "缺 config.env(复制 config.env.example 并填写)"; exit 1; }
-set -a; source config.env; set +a
-: "${DOMAIN:?域名必填}" "${CONV_DIR:?}" "${CONV_ADDR:?}" "${CONV_ADMIN_SECRET:?}" "${SUI_SUB_BASE:?}"
-CERT_MODE="${CERT_MODE:-le}"                 # le=Let's Encrypt / self=自签
-TLS_CERT="${TLS_CERT:-/etc/letsencrypt/live/${DOMAIN}/fullchain.pem}"
-TLS_KEY="${TLS_KEY:-/etc/letsencrypt/live/${DOMAIN}/privkey.pem}"
-SUI_API="${SUI_API:-}"                        # 例 http://127.0.0.1:9000/app/  留空则跳过节点自动硬化
-SUI_USER="${SUI_USER:-}"; SUI_PASS="${SUI_PASS:-}"
-HY2_TAG="${HY2_TAG:-快速节点}"
-
 R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' C='\033[0;36m' N='\033[0m'
 log(){ echo -e "${C}[*]${N} $*"; }
 ok(){  echo -e "${G}[OK]${N} $*"; }
 warn(){ echo -e "${Y}[!]${N} $*"; }
 die(){ echo -e "${R}[ERR]${N} $*" >&2; exit 1; }
+lc(){ printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "请用 root 运行: sudo bash bootstrap.sh"
+
+# ── 配置:config.env 可选(作默认值);缺的关键值在部署时交互提示 ─────────────
+[[ -f config.env ]] && { set -a; source config.env; set +a; }
+CONV_DIR="${CONV_DIR:-/opt/sui-converter}"
+CONV_ADDR="${CONV_ADDR:-127.0.0.1:25501}"
+SUI_SUB_BASE="${SUI_SUB_BASE:-http://127.0.0.1:2096/sub/}"
+CERT_MODE="${CERT_MODE:-le}"
+HY2_TAG="${HY2_TAG:-快速节点}"
+SUI_API="${SUI_API:-}"; SUI_USER="${SUI_USER:-}"; SUI_PASS="${SUI_PASS:-}"
+DOMAIN="${DOMAIN:-}"; TLS_CERT="${TLS_CERT:-}"; TLS_KEY="${TLS_KEY:-}"
+CONV_ADMIN_SECRET="${CONV_ADMIN_SECRET:-}"
+
+_ask(){  # _ask VAR "提示" "默认" [secret];已由 config.env 提供则不问;无 TTY 用默认
+  local var="$1" msg="$2" def="${3:-}" secret="${4:-}" input
+  [[ -n "${!var:-}" ]] && return
+  if [[ ! -t 0 ]]; then printf -v "$var" '%s' "$def"; return; fi
+  if [[ -n "$secret" ]]; then read -rsp "  ${msg}${def:+ [$def]}: " input; echo
+  else read -rp "  ${msg}${def:+ [$def]}: " input; fi
+  [[ -z "$input" ]] && input="$def"
+  printf -v "$var" '%s' "$input"
+}
+
+_prompt_config(){
+  echo -e "${C}=== 部署参数(回车=默认/检测值)===${N}"
+  _ask DOMAIN "对外域名(已解析到本机)" ""
+  [[ -n "$DOMAIN" ]] || die "域名必填"
+  TLS_CERT="${TLS_CERT:-/etc/letsencrypt/live/${DOMAIN}/fullchain.pem}"
+  TLS_KEY="${TLS_KEY:-/etc/letsencrypt/live/${DOMAIN}/privkey.pem}"
+  [[ -n "$CONV_ADMIN_SECRET" ]] || CONV_ADMIN_SECRET="$(openssl rand -hex 24 2>/dev/null || echo "change-me-$(date +%s)")"
+  local dohard="y"
+  [[ -t 0 ]] && read -rp "  自动把 hy2 节点切到域名证书?(需 s-ui 管理员账号)[Y/n]: " dohard
+  if [[ "$(lc "${dohard:-y}")" != "n" ]]; then
+    local sp spath sip
+    sp="$(/usr/local/s-ui/sui setting show 2>/dev/null | awk -F'[: \t]+' '/Panel port/{print $(NF)}')"
+    spath="$(/usr/local/s-ui/sui setting show 2>/dev/null | awk -F'Panel path:' '/Panel path/{gsub(/[ \t]/,"",$2);print $2}')"
+    sip="$(curl -s4 --max-time 5 https://api.ipify.org 2>/dev/null || echo 127.0.0.1)"
+    [[ -z "$SUI_API" && -n "$sp" ]] && SUI_API="http://${sip}:${sp}${spath:-/app/}"
+    _ask SUI_API  "s-ui 面板 API 地址" "${SUI_API:-http://127.0.0.1:9000/app/}"
+    _ask SUI_USER "s-ui 管理员账号" ""
+    _ask SUI_PASS "s-ui 管理员密码" "" secret
+    _ask HY2_TAG  "要硬化的 hy2 入站 tag" "快速节点"
+  fi
+}
 TS="$(date +%Y%m%d-%H%M%S)"; BK="/root/copr-bootstrap-backup/$TS"; mkdir -p "$BK"
 
 # ── 1) 依赖 ───────────────────────────────────────────────────────────────────
@@ -210,6 +243,7 @@ _selfcheck(){
 main(){
   _deps
   _ensure_sui
+  _prompt_config
   _certs
   _converter
   _seed_users
