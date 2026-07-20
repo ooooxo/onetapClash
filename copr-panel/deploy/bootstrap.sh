@@ -77,9 +77,10 @@ _prompt_config(){
   fi
   local sbase; sbase="$(printf '%s\n' "$ss2" | awk -F'Panel path:' '/Panel path/{gsub(/[ \t]/,"",$2);print $2}')"
   [[ -n "$sbase" ]] && SUI_BASE="$sbase"
-  local dohard="y"
-  [[ -t 0 ]] && read -rp "  自动把 hy2 节点切到域名证书?(需 s-ui 管理员账号)[Y/n]: " dohard
-  if [[ "$(lc "${dohard:-y}")" != "n" ]]; then
+  # 默认不动 s-ui:硬化(改 hy2 节点 TLS)是可选项,需显式 y 才做
+  local dohard="n"
+  [[ -t 0 ]] && read -rp "  可选:把 hy2 节点切到域名证书?会动 s-ui、需管理员账号(默认不做)[y/N]: " dohard
+  if [[ "$(lc "${dohard:-n}")" == "y" ]]; then
     [[ -z "$SUI_API" ]] && SUI_API="$(_detect_panel_url)"
     _ask SUI_API  "s-ui 面板 API 地址" "${SUI_API:-http://127.0.0.1:9000/app/}"
     _ask SUI_USER "s-ui 管理员账号" ""
