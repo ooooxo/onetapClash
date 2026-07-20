@@ -22,7 +22,7 @@ export const login = (user: string, pass: string) =>
   req(API, '/login', { method: 'POST', body: form({ user, pass }) })
 
 // s-ui 全量数据在 /load(不是 getData —— 那是内部函数)。返回 {success,msg,obj:{clients,inbounds,onlines,...}}
-export const loadData = () => req(API, '/load')
+export const loadData = () => req(API, '/load?lu=0')
 
 // 通用保存:object=inbounds|clients|... , action=new|edit|del , data=JSON
 export const save = (object: string, action: string, data: unknown, initUsers?: string) => {

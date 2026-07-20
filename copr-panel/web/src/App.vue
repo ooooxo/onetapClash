@@ -26,7 +26,7 @@ const NAV: { id: ViewId; label: string; icon: string }[] = [
   { id: 'settings', label: '设置', icon: 'settings' },
 ]
 const VIEWS: Record<ViewId, any> = { dash: Dashboard, nodes: Nodes, members: Members, sub: Sub, traffic: Traffic, settings: Settings }
-const SUB: Record<ViewId, string> = { dash: 'copr.site · Reality + Hysteria2', nodes: '入站与协议', members: '订阅 · 流量 · 到期', sub: '地址与模块化规则', traffic: '用量统计', settings: '面板与安全' }
+const SUB: Record<ViewId, string> = { dash: `${store.domain} · Hysteria2`, nodes: '入站与协议', members: '订阅 · 流量 · 到期', sub: '地址与模块化规则', traffic: '用量统计', settings: '面板与安全' }
 
 const user = ref('')
 const pass = ref('')
@@ -38,9 +38,9 @@ async function doLogin() {
     const res: any = await login(user.value, pass.value)
     if (res && res.success === false) { loginErr.value = res.msg || '账号或密码错误'; loggingIn.value = false; return }
     await store.load(); store.loggedIn = true
-  } catch {
-    // fetch 抛错 = 后端不可达(本地无后端)→ 演示模式;线上不会走到这
-    store.live = false; store.loggedIn = true
+  } catch (e: any) {
+    // 后端不可达(网络/域名 fake-ip/未部署)→ 明确报错,不再静默假装演示数据
+    loginErr.value = '后端不可达:确认浏览器能访问该域名(本机 Clash 是否把它 fake-ip?)、后端是否已部署'
   }
   loggingIn.value = false
 }
