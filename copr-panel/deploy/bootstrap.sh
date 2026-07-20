@@ -165,6 +165,7 @@ After=network.target
 Environment=ADMIN_SECRET=${CONV_ADMIN_SECRET}
 Environment=USERS_FILE=${CONV_DIR}/users.json
 Environment=RULES_FILE=${CONV_DIR}/rules.json
+Environment=SUI_SUB_BASE=${SUI_SUB_BASE}
 ExecStart=${CONV_DIR}/venv/bin/python ${CONV_DIR}/converter.py
 Restart=always
 RestartSec=3

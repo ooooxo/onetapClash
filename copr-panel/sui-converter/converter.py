@@ -17,6 +17,8 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 USERS_FILE = os.environ.get("USERS_FILE", os.path.join(BASE, "users.json"))
 RULES_FILE = os.environ.get("RULES_FILE", os.path.join(BASE, "rules.json"))
 RULES_DEFAULT = os.path.join(BASE, "rules.default.json")
+# s-ui 原生订阅前缀:/get/<名> 未在 users.json 时回源 SUI_SUB_BASE+<名>(面板建的会员即刻可用)
+SUI_SUB_BASE = os.environ.get("SUI_SUB_BASE", "http://127.0.0.1:2096/sub/")
 
 
 def load_users():
@@ -287,10 +289,16 @@ def build_clash_config(proxies, userinfo, mgmt_domain=None):
 @app.route("/get/<username>")
 def get_sub(username):
     users = load_users()
-    if username not in users:
-        return Response("User not found", status=404)
+    entry = users.get(username)
+    # 优先 users.json 的自定义映射;否则回源 s-ui 原生订阅(面板/后台建的会员即刻可用,无需手动注册)
+    if isinstance(entry, dict) and entry.get("url"):
+        url = entry["url"]
+    else:
+        url = f"{SUI_SUB_BASE.rstrip('/')}/{username}"
     try:
-        resp = requests.get(users[username]["url"], verify=False, timeout=10)
+        resp = requests.get(url, verify=False, timeout=10)
+        if resp.status_code >= 400:
+            return Response("User not found", status=404)   # s-ui 无此会员
         proxies = extract_proxies(resp.text)   # 兼容 Clash YAML 与 s-ui 原生 base64 URI
         if not proxies:
             return Response("No proxies found", status=502)
