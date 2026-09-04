@@ -9,6 +9,13 @@ export interface BuildOpts {
   uuid?: string
   hy2pw?: string
   group?: string
+  enable?: boolean         // 停用的会员保留配置但连不上
+  desc?: string
+  flow?: string            // VLESS flow;留空 = 不用 vision
+  autoReset?: boolean
+  resetDays?: number
+  delayStart?: boolean     // 首次连接才开始算到期
+  extLinks?: string[]      // 外部订阅/分享链接;s-ui 只保留 type != 'local' 的条目
 }
 
 export function buildClient(name: string, o: BuildOpts = {}) {
@@ -25,7 +32,7 @@ export function buildClient(name: string, o: BuildOpts = {}) {
     shadowsocks16: { name, password: rb64(16) },
     shadowtls: { name, password: rb64(32) },
     vmess: { name, uuid: u1, alterId: 0 },
-    vless: { name, uuid: u1, flow: 'xtls-rprx-vision' },
+    vless: { name, uuid: u1, flow: o.flow ?? 'xtls-rprx-vision' },
     anytls: { name, password: mp },
     trojan: { name, password: mp },
     naive: { username: name, password: mp },
@@ -34,12 +41,16 @@ export function buildClient(name: string, o: BuildOpts = {}) {
     hysteria2: { name, password: o.hy2pw || mp },
   }
   return {
-    enable: true, name, config,
+    enable: o.enable ?? true, name, config,
     inbounds: o.inbounds,
-    links: [],
+    // s-ui 会重建 type='local' 的链接,只保留非 local 的,所以外部链接放这里不会被冲掉
+    links: (o.extLinks ?? []).filter(u => u.trim())
+      .map(uri => ({ remark: 'external', type: 'external', uri: uri.trim() })),
     volume: Math.round((o.volumeGiB || 0) * 1073741824),
     expiry: o.expiryMs || 0,
-    up: 0, down: 0, desc: '', group: o.group || '',
-    delayStart: false, autoReset: false, resetDays: 0,
+    up: 0, down: 0, desc: o.desc || '', group: o.group || '',
+    delayStart: o.delayStart ?? false,
+    autoReset: o.autoReset ?? false,
+    resetDays: o.autoReset ? (o.resetDays || 30) : 0,
   }
 }

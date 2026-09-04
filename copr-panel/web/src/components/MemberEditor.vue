@@ -45,7 +45,15 @@ async function save() {
   if (!nm) { toast('请填名称'); return }
   if (!picked.value.length) { toast('请至少选一个节点'); return }
   const expiryMs = expiry.value ? new Date(expiry.value + 'T00:00:00').getTime() : 0
-  const obj = buildClient(nm, { inbounds: [...picked.value], volumeGiB: Number(volume.value) || 0, expiryMs, uuid: uuid.value, hy2pw: pw.value, group: group.value })
+  const obj = buildClient(nm, {
+    inbounds: [...picked.value], volumeGiB: Number(volume.value) || 0, expiryMs,
+    uuid: uuid.value, hy2pw: pw.value, group: group.value,
+    enable: enabled.value, desc: desc.value,
+    flow: flow.value === '(空)' ? '' : flow.value,
+    autoReset: autoReset.value, resetDays: Number(resetDays.value) || 30,
+    delayStart: delayStart.value,
+    extLinks: ext.value ? [ext.value] : [],
+  })
   busy.value = true
   try {
     await apiSave('clients', 'new', obj)
@@ -85,7 +93,7 @@ async function save() {
     </div>
 
     <div v-else-if="tab === 'config'">
-      <div class="fnote" style="margin-bottom:14px">凭证按绑定协议自动生成,可手改。上线后对接 s-ui 全 15 协议凭证。</div>
+      <div class="fnote" style="margin-bottom:14px">凭证按绑定协议自动生成,可手改。创建时会为 s-ui 支持的全部协议各生成一套。</div>
       <div class="frow"><div class="fld gen"><label>VLESS UUID</label><input v-model="uuid" readonly /><button class="rg" @click="uuid = ruuid()">重新生成</button></div><div class="fld"><label>VLESS Flow</label><XSelect v-model="flow" :options="['xtls-rprx-vision', '(空)']" /></div></div>
       <div class="fld gen"><label>Hysteria2 密码</label><input v-model="pw" readonly /><button class="rg" @click="pw = rb64(16)">重新生成</button></div>
     </div>
