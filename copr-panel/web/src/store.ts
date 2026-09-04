@@ -34,9 +34,10 @@ export const store = reactive({
   onlineInbounds: [] as string[],  // 有活跃连接的节点 tag(真数据,来自 onlines）
   onlineUsers: [] as string[],
   subUrl(name: string) { return `${location.origin}/get/${name}` }, // 跟随面板协议/端口(HTTPS 面板→HTTPS 订阅)
-  suiPort: 2095,        // s-ui 原面板端口,登录后由 /api/settings 校正
+  suiPort: 2095,        // s-ui 原面板端口(仅供「设置」页展示,访问不再用它)
   suiPath: '/app/',
-  suiUrl() { return `${location.protocol}//${this.domain}:${this.suiPort}${this.suiPath}` },
+  // 同源 HTTPS 反代,不再直连 :2095 —— 那个口是明文 HTTP 且已在防火墙关掉
+  suiUrl() { return `${location.origin}${this.suiPath}` },
   async load() {
     this.loading = true; this.error = ''
     try {

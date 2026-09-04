@@ -56,5 +56,15 @@ server {
         add_header Access-Control-Allow-Origin *;
         add_header Access-Control-Expose-Headers Subscription-Userinfo;
     }
+    # s-ui 原生面板:统一收到 HTTPS 后面,2095 不再对公网开放(明文登录=密码裸奔)
+    location ${SUI_BASE} {
+        proxy_pass http://${SUI_ADDR}${SUI_BASE};
+        proxy_set_header Host ${DOMAIN};
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 300s;
+    }
     location / { return 200 "OK"; add_header Content-Type text/plain; }
 }

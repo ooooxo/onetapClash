@@ -253,7 +253,9 @@ _services(){ CONV_ADDR="$CONV_ADDR" SUI_ADDR="$SUI_ADDR" bash ensure-services.sh
 
 _harden(){
   [[ "$(lc "$HARDEN")" == "no" ]] && { warn "HARDEN=no,跳过安全加固"; return; }
-  local utcp="${SSH_PORT},80,${TLS_PORT},${SUI_PORT},${SUI_SUB_PORT}" uudp=""
+  # 不放行 SUI_PORT / SUI_SUB_PORT:s-ui 原生面板没有 TLS,明文暴露=管理员密码裸奔。
+  # 它已由 nginx 经 HTTPS 反代到 ${SUI_BASE};订阅也走 443 的 /get/。本机回环不受防火墙限制。
+  local utcp="${SSH_PORT},80,${TLS_PORT}" uudp=""
   case "$(lc "$WANT_REALITY")" in no|0|false) :;; *) utcp="${utcp},${REALITY_PORT}";; esac
   uudp="${HY2_PORT}"
   SSH_PORT="$SSH_PORT" OPEN_TCP="$utcp" OPEN_UDP="$uudp" \
