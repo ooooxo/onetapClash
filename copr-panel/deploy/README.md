@@ -35,7 +35,7 @@ sudo bash bootstrap.sh              # 装 s-ui → 证书 → 节点 → convert
 ## 日常更新(已部署过的机器)
 
 ```bash
-bash push.sh                        # 本地构建面板 → 同步 → 远程 install.sh
+bash push.sh                        # 本地构建面板 → 同步 → 远程 bootstrap.sh --update
 ```
 
 ## 各步骤的破坏性
@@ -50,7 +50,8 @@ bash push.sh                        # 本地构建面板 → 同步 → 远程 i
 
 ## 复用要点
 
-- `install.sh` 幂等,每步先备份到 `/root/copr-panel-backup/<时间戳>`,可回滚。
+- `bootstrap.sh` 幂等,每步先备份到 `/root/copr-bootstrap-backup/<时间戳>`,可回滚。
+- 三种模式:无参=从零全量;`--update`=只更新 面板/converter/nginx;`--panel-only`=只更新面板静态包。
 - `--panel-only` 只更新面板,不动 converter。
 - converter 部署**保留** `users.json` / `rules.json`(用户与规则不丢)。
 - nginx 用 `envsubst` 从模板生成,变量全来自 config.env。

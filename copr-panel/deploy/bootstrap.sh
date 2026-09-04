@@ -2,7 +2,9 @@
 # =============================================================================
 #  onetapclash 一键部署 —— 跑完就能用,你只需要再手动加会员。
 #
-#  用法:  sudo bash bootstrap.sh
+#  用法:  sudo bash bootstrap.sh                # 全量:从零到可用
+#          sudo bash bootstrap.sh --update       # 只更新面板/converter/nginx(日常发版)
+#          sudo bash bootstrap.sh --panel-only   # 只更新面板静态包 + nginx
 #          (读同目录 config.env;缺的关键值会交互问,无 TTY 时用默认值)
 #
 #  跑完你会得到:
@@ -25,6 +27,14 @@ lc(){ printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 . ./_common.sh
 load_config_env config.env
+
+MODE=full
+case "${1:-}" in
+  --update)     MODE=update ;;
+  --panel-only) MODE=panel ;;
+  "")           ;;
+  *)            die "未知参数: $1(可用:--update / --panel-only)" ;;
+esac
 # ── 参数(config.env 可覆盖;这里是唯一的默认值来源)─────────────────────────
 CONV_DIR="${CONV_DIR:-/opt/sui-converter}"
 CONV_ADDR="${CONV_ADDR:-127.0.0.1:25501}"
@@ -70,9 +80,12 @@ _prompt_config(){
   _ask DOMAIN   "对外域名(必须已解析到本机)" ""
   [[ -n "$DOMAIN" ]] || die "域名必填"
   # s-ui 账号密码是必需的:后面要用它调 API 自动开节点
-  _ask SUI_USER "s-ui 管理员账号" "admin"
-  _ask SUI_PASS "s-ui 管理员密码(新装则按此设定)" "" secret
-  [[ -n "$SUI_PASS" ]] || die "密码必填(自动开节点要用它调 s-ui API)"
+  # 只有全量部署才需要 s-ui 账号密码(要用它调 API 装节点);更新模式不碰 s-ui
+  if [[ "$MODE" == "full" ]]; then
+    _ask SUI_USER "s-ui 管理员账号" "admin"
+    _ask SUI_PASS "s-ui 管理员密码(新装则按此设定)" "" secret
+    [[ -n "$SUI_PASS" ]] || die "密码必填(自动开节点要用它调 s-ui API)"
+  fi
   TLS_CERT="${TLS_CERT:-/etc/letsencrypt/live/${DOMAIN}/fullchain.pem}"
   TLS_KEY="${TLS_KEY:-/etc/letsencrypt/live/${DOMAIN}/privkey.pem}"
   [[ -n "$CONV_ADMIN_SECRET" ]] || CONV_ADMIN_SECRET="$(openssl rand -hex 24)"
@@ -292,6 +305,14 @@ _selfcheck(){
 
 main(){
   _prompt_config
+  # 日常发版只动我们自己的三块,不碰 s-ui / 证书 / 防火墙 / 节点
+  if [[ "$MODE" == "panel" ]]; then
+    _panel; _nginx; ok "面板已更新"; return
+  fi
+  if [[ "$MODE" == "update" ]]; then
+    HOP_PORTS_EFF=""; [[ "$(lc "$HOP_ENABLE")" != "no" ]] && HOP_PORTS_EFF="$HY2_HOP_PORTS"
+    _converter; _panel; _nginx; _selfcheck || warn "自检有告警"; ok "更新完成"; return
+  fi
   _deps
   _sui
   _certs

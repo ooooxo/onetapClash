@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 本地构建面板 + 同步到服务器 + 远程跑 install.sh。可复用:全靠 config.env。
+# 本地构建面板 + 同步到服务器 + 远程跑 bootstrap.sh --update。可复用:全靠 config.env。
 # 用法: bash push.sh            (全量:面板+converter+nginx)
-#       bash push.sh --panel-only
+#       bash push.sh --panel-only   (只更新面板静态包)
 set -euo pipefail
 cd "$(dirname "$0")"
 [[ -f config.env ]] || { echo "缺 config.env"; exit 1; }
@@ -20,5 +20,5 @@ rsync -az -e "ssh ${SSHOPT[*]-}" ../ "$SSH_HOST:/root/copr-panel-src/" \
   --exclude web/node_modules --exclude web/dist --exclude .git
 
 echo "[*] 远程安装..."
-ssh ${SSHOPT[@]+"${SSHOPT[@]}"} "$SSH_HOST" "cd /root/copr-panel-src/deploy && sudo bash install.sh ${1:-}"
+ssh ${SSHOPT[@]+"${SSHOPT[@]}"} "$SSH_HOST" "cd /root/copr-panel-src/deploy && sudo bash bootstrap.sh ${1:---update}"
 echo "[OK] 部署完成。"

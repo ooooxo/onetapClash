@@ -27,6 +27,14 @@ export const loadData = () => req(API, '/load?lu=0')
 // s-ui 面板设置(端口/路径/订阅端口…),用于「设置」页显示真实值而非写死
 export const settings = () => req(API, '/settings')
 
+// 单个会员的【完整】记录 —— 只有带 id 的这个接口会返回 config(各协议凭证);
+// 不带 id 的 /clients 列表是没有 config 的。编辑会员必须走这里取回整条再改,
+// 否则 save('clients','edit') 会把凭证清空,用户链接立刻失效。
+export const getClient = async (id: number) => {
+  const r: any = await req(API, `/clients?id=${id}`)
+  return r?.obj?.clients?.[0] ?? null
+}
+
 // Reality x25519 密钥对(s-ui 生成,返回 ["PrivateKey: xxx","PublicKey: yyy"])
 export const realityKeypair = async (): Promise<{ priv: string; pub: string }> => {
   const r: any = await req(API, '/keypairs?k=reality')

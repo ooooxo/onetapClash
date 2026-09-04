@@ -34,7 +34,7 @@ sudo bash bootstrap.sh              # 装 s-ui → 证书 → 开节点 → conv
 ## 改完怎么发上去
 
 ```bash
-cd deploy && bash push.sh              # 本地构建面板 → 同步 → 远程 install.sh
+cd deploy && bash push.sh              # 本地构建面板 → 同步 → 远程 bootstrap.sh --update
 bash push.sh --panel-only              # 只更新面板,不碰 converter
 ```
 
