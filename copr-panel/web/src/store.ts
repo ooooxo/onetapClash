@@ -2,24 +2,8 @@ import { reactive } from 'vue'
 import { loadData } from './api/client'
 
 export interface Member { name: string; gb: number; on: boolean; exp: string; id?: number }
-export interface Node { name: string; proto: string; port: number; net: string }
-
-// 演示数据 — 接线上(store.load)后由 s-ui getData 覆盖
-const MOCK_MEMBERS: Member[] = [
-  { name: 'jf', gb: 210, on: true, exp: '长期' },
-  { name: 'suki', gb: 156, on: true, exp: '2026-12-31' },
-  { name: 'shaoye', gb: 132, on: false, exp: '2026-10-01' },
-  { name: 'nox', gb: 98, on: true, exp: '长期' },
-  { name: 'xuan', gb: 76, on: false, exp: '2026-09-15' },
-  { name: 'tuxh', gb: 54, on: false, exp: '2026-08-20' },
-  { name: 'alb', gb: 41, on: false, exp: '长期' },
-  { name: 'test', gb: 12, on: false, exp: '2026-07-31' },
-  { name: 'outbound', gb: 8, on: false, exp: '长期' },
-]
-const MOCK_NODES: Node[] = [
-  { name: 'VLESS · Reality', proto: 'vless', port: 443, net: 'TCP' },
-  { name: 'Hysteria2', proto: 'hysteria2', port: 443, net: 'UDP' },
-]
+// id/tag 是 s-ui 真实入站主键 —— 新建会员时按 id 绑定,绝不写死 [1,2]
+export interface Node { id: number; name: string; proto: string; port: number; net: string }
 
 // s-ui /load 实测结构:client {name, up, down, volume, expiry, inbounds[]}; online 看 onlines.user[]。
 function mapClient(c: any, onlineUsers: string[]): Member {
@@ -31,7 +15,7 @@ function mapClient(c: any, onlineUsers: string[]): Member {
 }
 function mapInbound(i: any): Node {
   const net = /hysteria|tuic|quic/i.test(i.type || '') ? 'UDP' : 'TCP'
-  return { name: i.tag || i.type || 'node', proto: i.type || '?', port: i.listen_port || i.port || 443, net }
+  return { id: Number(i.id), name: i.tag || i.type || 'node', proto: i.type || '?', port: i.listen_port || i.port || 443, net }
 }
 
 export type ViewId = 'dash' | 'nodes' | 'members' | 'sub' | 'traffic' | 'settings'
@@ -44,27 +28,31 @@ export const store = reactive({
   live: false,      // true = 已接 s-ui 真数据
   loading: false,
   error: '',
-  members: MOCK_MEMBERS as Member[],
-  nodes: MOCK_NODES as Node[],
+  // 初始为空 —— 没接上后端就什么都不显示,绝不用演示数据冒充真实状态
+  members: [] as Member[],
+  nodes: [] as Node[],
   onlineInbounds: [] as string[],  // 有活跃连接的节点 tag(真数据,来自 onlines）
   onlineUsers: [] as string[],
   subUrl(name: string) { return `${location.origin}/get/${name}` }, // 跟随面板协议/端口(HTTPS 面板→HTTPS 订阅)
-  suiUrl() { return `http://${this.domain}:2095/app/` }, // s-ui 原面板(深水区:开节点/改凭证)
+  suiPort: 2095,        // s-ui 原面板端口,登录后由 /api/settings 校正
+  suiPath: '/app/',
+  suiUrl() { return `${location.protocol}//${this.domain}:${this.suiPort}${this.suiPath}` },
   async load() {
     this.loading = true; this.error = ''
     try {
       const r: any = await loadData()
-      const o = r?.obj ?? r
-      // 未登录时 s-ui 会 307 跳 /login,fetch 跟随后拿到 "OK" 字符串;必须校验真有 clients 数组,
-      // 否则不能算 live(否则显示"线上"+演示数据,误导)。抛错交给 onMounted/doLogin 走登录。
-      if (!o || typeof o !== 'object' || !Array.isArray(o.clients)) {
-        throw new Error('未登录或后端未返回数据')
+      // 未登录时 s-ui 会 307 跳 /login,fetch 跟随后拿到 "OK" 字符串 —— 那种情况没有 success 字段。
+      // 判活只看 success===true;clients/inbounds 在全新安装时是 null(不是 []),按空数组处理,
+      // 否则"后端一切正常但还没建会员"会被误判成后端不可达。
+      if (!r || typeof r !== 'object' || r.success !== true) {
+        throw new Error(r?.msg || '未登录或后端未返回数据')
       }
+      const o = r.obj ?? {}
       const onlineUsers: string[] = o?.onlines?.user ?? []
       this.onlineUsers = onlineUsers
       this.onlineInbounds = o?.onlines?.inbound ?? []
-      this.members = o.clients.map((c: any) => mapClient(c, onlineUsers))
-      if (Array.isArray(o.inbounds)) this.nodes = o.inbounds.map(mapInbound)
+      this.members = (o.clients ?? []).map((c: any) => mapClient(c, onlineUsers))
+      this.nodes = (o.inbounds ?? []).map(mapInbound)
       this.live = true
     } catch (e: any) {
       this.error = String(e?.message || e); this.live = false

@@ -24,7 +24,24 @@ export const login = (user: string, pass: string) =>
 // s-ui 全量数据在 /load(不是 getData —— 那是内部函数)。返回 {success,msg,obj:{clients,inbounds,onlines,...}}
 export const loadData = () => req(API, '/load?lu=0')
 
+// s-ui 面板设置(端口/路径/订阅端口…),用于「设置」页显示真实值而非写死
+export const settings = () => req(API, '/settings')
+
+// Reality x25519 密钥对(s-ui 生成,返回 ["PrivateKey: xxx","PublicKey: yyy"])
+export const realityKeypair = async (): Promise<{ priv: string; pub: string }> => {
+  const r: any = await req(API, '/keypairs?k=reality')
+  const arr: string[] = r?.obj ?? []
+  const pick = (p: string) => (arr.find(x => x.startsWith(p)) || '').split(': ')[1] || ''
+  return { priv: pick('PrivateKey'), pub: pick('PublicKey') }
+}
+
 // 通用保存:object=inbounds|clients|... , action=new|edit|del , data=JSON
+//
+// ⚠️ data 必须是【紧凑】JSON(JSON.stringify 默认行为,不要加缩进/空格)。
+// s-ui 把 client.inbounds 原样当 blob 存进 SQLite,再用 json_each() 查。SQLite 见到 BLOB 会先
+// 试着按 JSONB 解析:`[1, 2]`(带空格,6 字节)恰好符合 JSONB 头部长度,于是被当成 JSONB 解出
+// 乱码 → "malformed JSON",整个保存失败;`[1,2]`(5 字节)长度对不上,退回文本解析才正常。
+// 这就是「会员绑多个节点必失败」的根因 —— 别在这里做美化输出。
 export const save = (object: string, action: string, data: unknown, initUsers?: string) => {
   const body: Record<string, string> = { object, action, data: JSON.stringify(data) }
   if (initUsers) body.initUsers = initUsers

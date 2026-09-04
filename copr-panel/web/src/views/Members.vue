@@ -3,7 +3,8 @@ import { computed } from 'vue'
 import { store } from '../store'
 import { ui } from '../ui'
 import Icon from '../components/Icon.vue'
-const mx = computed(() => Math.max(...store.members.map(m => m.gb)))
+// 空列表时 Math.max(...[]) = -Infinity → 宽度 NaN%;兜底 1
+const mx = computed(() => Math.max(1, ...store.members.map(m => m.gb)))
 </script>
 <template>
   <div class="panel">
@@ -11,7 +12,10 @@ const mx = computed(() => Math.max(...store.members.map(m => m.gb)))
       <button class="gh2" @click="ui.bulkOpen = true">批量添加</button>
       <button class="pri" @click="ui.memberEditName = ''"><Icon name="add" :size="15" />新增会员</button>
     </div>
-    <div v-for="m in store.members" :key="m.name" class="row tap" :class="{ top: m.gb === mx }" @click="ui.drawerName = m.name">
+    <div v-if="!store.members.length" style="padding:20px 0;text-align:center;font-size:12px;color:var(--ink-4)">
+      还没有会员 —— 点右上「新增会员」建一个,订阅地址就是 {{ store.subUrl('<名称>') }}
+    </div>
+    <div v-for="m in store.members" :key="m.name" class="row tap" :class="{ top: m.gb === mx && m.gb > 0 }" @click="ui.drawerName = m.name">
       <span class="dot" :class="{ on: m.on }" />
       <div class="ti2">{{ m.name[0].toUpperCase() }}</div>
       <div class="who"><b>{{ m.name }}</b><span>get/{{ m.name }}</span></div>

@@ -1,102 +1,128 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import Modal from './Modal.vue'
-import XSelect from './XSelect.vue'
 import Switch from './Switch.vue'
 import Icon from './Icon.vue'
-import { rb64, rhex } from '../lib/rand'
+import { rhex } from '../lib/rand'
 import { toast } from '../ui'
 import { store } from '../store'
+import { save as apiSave, realityKeypair } from '../api/client'
+
+// 这个表单是【真的会建节点】的:先建 tls 记录,再建 inbound,s-ui 立刻热加载。
+// (旧版所有字段都只是摆设,点保存只是打开 s-ui —— 那才是「假数据」的重灾区。)
 const emit = defineEmits<{ (e: 'close'): void }>()
 function openSui() { window.open(store.suiUrl(), '_blank') }
 
-const tab = ref<'reality' | 'hy2' | 'tuic'>('reality')
-function preset(p: 'reality' | 'hy2' | 'tuic') { tab.value = p; toast('已套用预设') }
+type Kind = 'hy2' | 'reality' | 'tuic'
+const kind = ref<Kind>('hy2')
+const busy = ref(false)
+const err = ref('')
 
-// Reality
-const rTag = ref('reality-in'); const rPort = ref('443')
-const tlsMode = ref('Reality(推荐,借真站点证书)')
-const dest = ref('www.apple.com:443'); const sni = ref('www.apple.com')
-const privKey = ref(rb64(43)); const pubKey = ref(rb64(43)); const shortId = ref(rhex(8))
-const flow = ref('xtls-rprx-vision'); const utls = ref('chrome'); const transport = ref('none · 裸 TCP(最快)')
-const sniff = ref(true)
-const certR = ref('ACME 自动'); const sniR = ref('copr.site'); const alpn = ref('h2, http/1.1')
-function regenRK() { privKey.value = rb64(43); pubKey.value = rb64(43) }
+const tag = ref('quick')
+const port = ref('443')
+const domain = ref(store.domain)
+const certPath = ref(`/etc/letsencrypt/live/${store.domain}/fullchain.pem`)
+const keyPath = ref(`/etc/letsencrypt/live/${store.domain}/privkey.pem`)
+const ignoreBw = ref(true)          // hy2:忽略客户端带宽宣告,交给 BBR 跑满
+const dest = ref('www.apple.com')   // reality 握手目标
 
-// HY2
-const hTag = ref('hysteria2-in'); const hPort = ref('443'); const ignoreBw = ref(true)
-const up = ref('900'); const dn = ref('900'); const obfs = ref(false); const obfsPw = ref(rb64(12))
-const masq = ref('https://bing.com'); const certH = ref('ACME 自动(copr.site)'); const sniH = ref('copr.site')
+function pick(k: Kind) {
+  kind.value = k
+  if (k === 'hy2') { tag.value = 'quick'; port.value = '443' }
+  if (k === 'reality') { tag.value = 'reality'; port.value = '8443' }   // 443/tcp 通常被 nginx 占着
+  if (k === 'tuic') { tag.value = 'tuic'; port.value = '2053' }
+}
 
-// TUIC
-const tTag = ref('tuic-in'); const tPort = ref('2053'); const cc = ref('bbr'); const relay = ref('native')
-const certT = ref('ACME 自动'); const sniT = ref('copr.site')
+// save 返回 {obj:{tls:[...]}} —— 从里面取回新建的 tls id
+async function createTls(name: string, server: any, client: any): Promise<number> {
+  const r: any = await apiSave('tls', 'new', { id: 0, name, server, client })
+  if (r?.success !== true) throw new Error(r?.msg || '创建 TLS 失败')
+  const list: any[] = r?.obj?.tls ?? []
+  const hit = list.find(t => t.name === name)
+  if (!hit) throw new Error('创建了 TLS 但拿不到 id')
+  return hit.id
+}
 
-const adv = () => openSui()
-// 节点 = inbound + tls_id,改错会断所有用户;安全起见走 s-ui 原面板(此表单为参数参考)
-const saveNode = () => { openSui(); toast('已打开 s-ui 开节点(节点配置直接改核心,故走原面板最稳)'); emit('close') }
+async function create() {
+  err.value = ''
+  const t = tag.value.trim(); const p = Number(port.value)
+  if (!t) { err.value = '备注 / tag 必填'; return }
+  if (!(p > 0 && p < 65536)) { err.value = '端口不合法'; return }
+  if (store.nodes.some(n => n.name === t)) { err.value = `tag「${t}」已存在` ; return }
+  busy.value = true
+  try {
+    let tlsId: number
+    let inbound: Record<string, any>
+    if (kind.value === 'reality') {
+      const { priv, pub } = await realityKeypair()
+      if (!priv || !pub) throw new Error('拿不到 Reality 密钥对')
+      const sid = rhex(8)
+      tlsId = await createTls(`reality-${dest.value}`,
+        { enabled: true, server_name: dest.value,
+          reality: { enabled: true, handshake: { server: dest.value, server_port: 443 }, private_key: priv, short_id: [sid] } },
+        { enabled: true, server_name: dest.value,
+          utls: { enabled: true, fingerprint: 'chrome' },
+          reality: { enabled: true, public_key: pub, short_id: sid } })
+      // 注意:不要带 transport:{} —— 空 transport 会让 s-ui 生成链接时报 malformed JSON
+      inbound = { id: 0, type: 'vless', tag: t, listen: '::', listen_port: p, tls_id: tlsId,
+        addrs: [{ server: domain.value, server_port: p }], out_json: {} }
+    } else {
+      tlsId = await createTls(`${domain.value}-le-${t}`,
+        { enabled: true, server_name: domain.value, alpn: ['h3'], certificate_path: certPath.value, key_path: keyPath.value },
+        { enabled: true, server_name: domain.value, insecure: false, alpn: ['h3'] })
+      inbound = kind.value === 'hy2'
+        ? { id: 0, type: 'hysteria2', tag: t, listen: '::', listen_port: p, tls_id: tlsId,
+            ignore_client_bandwidth: ignoreBw.value, addrs: [{ server: domain.value, server_port: p }], out_json: {} }
+        : { id: 0, type: 'tuic', tag: t, listen: '::', listen_port: p, tls_id: tlsId,
+            congestion_control: 'bbr', addrs: [{ server: domain.value, server_port: p }], out_json: {} }
+    }
+    const r: any = await apiSave('inbounds', 'new', inbound)
+    if (r?.success !== true) throw new Error(r?.msg || '创建入站失败')
+    await store.load()
+    toast(`节点已开设:${t} :${p}`)
+    emit('close')
+  } catch (e: any) {
+    err.value = String(e?.message || e)
+  }
+  busy.value = false
+}
 </script>
 
 <template>
   <Modal wide @close="emit('close')">
     <div class="mh3">开设节点</div>
-    <div class="msub">选预设自动拉满,或手动调 · 保存后 s-ui 重载(用户短暂重连)</div>
+    <div class="msub">选预设 → 填端口 → 保存。会真的写进 s-ui 并热加载(在线用户短暂重连)。</div>
     <div class="psets">
-      <div class="pset" :class="{ on: tab === 'reality' }" @click="preset('reality')"><b>极速抗封锁</b><span>VLESS·Vision·Reality</span></div>
-      <div class="pset" :class="{ on: tab === 'hy2' }" @click="preset('hy2')"><b>高速 UDP</b><span>Hysteria2·BBR 拉满</span></div>
-      <div class="pset" :class="{ on: tab === 'tuic' }" @click="preset('tuic')"><b>备选 QUIC</b><span>TUIC v5·BBR</span></div>
-    </div>
-    <div class="mtabs">
-      <button :class="{ on: tab === 'reality' }" @click="tab = 'reality'">VLESS·Reality</button>
-      <button :class="{ on: tab === 'hy2' }" @click="tab = 'hy2'">Hysteria2</button>
-      <button :class="{ on: tab === 'tuic' }" @click="tab = 'tuic'">TUIC</button>
+      <div class="pset" :class="{ on: kind === 'hy2' }" @click="pick('hy2')"><b>高速 UDP</b><span>Hysteria2 · 真实证书</span></div>
+      <div class="pset" :class="{ on: kind === 'reality' }" @click="pick('reality')"><b>抗封锁 TCP</b><span>VLESS · Vision · Reality</span></div>
+      <div class="pset" :class="{ on: kind === 'tuic' }" @click="pick('tuic')"><b>备选 QUIC</b><span>TUIC v5 · BBR</span></div>
     </div>
 
-    <div v-if="tab === 'reality'">
-      <div class="frow"><div class="fld"><label>备注 / tag</label><input v-model="rTag" /></div><div class="fld"><label>监听端口</label><input v-model="rPort" /></div></div>
-      <div class="ssec">TLS</div>
-      <div class="fld"><label>TLS 模式</label><XSelect v-model="tlsMode" :options="['Reality(推荐,借真站点证书)', '标准 TLS']" /></div>
-      <template v-if="tlsMode.startsWith('Reality')">
-        <div class="fld"><label>握手目标 dest(真站点)</label><input v-model="dest" /><div class="fnote">须 TLS1.3、非 CDN,端口通常 443</div></div>
-        <div class="fld"><label>SNI / serverNames</label><input v-model="sni" /></div>
-        <div class="fld gen"><label>私钥 x25519</label><input v-model="privKey" readonly /><button class="rg" @click="regenRK">重新生成</button><div class="fnote">公钥: {{ pubKey }}</div></div>
-        <div class="fld gen"><label>Short ID</label><input v-model="shortId" readonly /><button class="rg" @click="shortId = rhex(8)">刷新</button></div>
-      </template>
-      <template v-else>
-        <div class="frow"><div class="fld"><label>证书</label><XSelect v-model="certR" :options="['ACME 自动', '自签名', '已有证书']" /></div><div class="fld"><label>SNI</label><input v-model="sniR" /></div></div>
-        <div class="fld"><label>ALPN</label><input v-model="alpn" /></div>
-      </template>
-      <div class="ssec">协议 / 传输</div>
-      <div class="frow"><div class="fld"><label>Flow</label><XSelect v-model="flow" :options="['xtls-rprx-vision', '(空)']" /></div><div class="fld"><label>uTLS 指纹</label><XSelect v-model="utls" :options="['chrome', 'firefox', 'safari', 'ios', 'edge', 'random']" /></div></div>
-      <div class="fld"><label>传输</label><XSelect v-model="transport" :options="['none · 裸 TCP(最快)', 'ws', 'grpc', 'httpupgrade']" /></div>
-      <div class="swrow"><div class="tx"><b>流量嗅探</b><span>识别域名以分流</span></div><Switch v-model="sniff" /></div>
-      <div class="adv" @click="adv"><Icon name="bolt" :size="14" />高级设置(ACME / 传输 / mux)→ s-ui 原面板</div>
-    </div>
+    <div class="frow"><div class="fld"><label>备注 / tag</label><input v-model="tag" /></div>
+      <div class="fld"><label>监听端口</label><input v-model="port" /></div></div>
+    <div class="fld"><label>对外地址(客户端连的域名)</label><input v-model="domain" /></div>
 
-    <div v-else-if="tab === 'hy2'">
-      <div class="frow"><div class="fld"><label>备注 / tag</label><input v-model="hTag" /></div><div class="fld"><label>监听端口</label><input v-model="hPort" /></div></div>
-      <div class="ssec">带宽 / 拥塞</div>
-      <div class="swrow"><div class="tx"><b>忽略客户端带宽(BBR)</b><span>解掉限速,推荐开 —— 正是你 10MB/s 的修法</span></div><Switch v-model="ignoreBw" /></div>
-      <div class="frow"><div class="fld"><label>上行 Mbps(brutal 时)</label><input v-model="up" /></div><div class="fld"><label>下行 Mbps</label><input v-model="dn" /></div></div>
-      <div class="ssec">混淆 / 伪装</div>
-      <div class="swrow"><div class="tx"><b>obfs salamander</b><span>抗主动探测,需客户端一致</span></div><Switch v-model="obfs" /></div>
-      <div v-if="obfs" class="fld"><label>obfs 密码</label><input v-model="obfsPw" /></div>
-      <div class="fld"><label>masquerade 伪装</label><input v-model="masq" /></div>
-      <div class="ssec">TLS</div>
-      <div class="frow"><div class="fld"><label>证书</label><XSelect v-model="certH" :options="['ACME 自动(copr.site)', '自签名', '已有证书']" /></div><div class="fld"><label>SNI</label><input v-model="sniH" /></div></div>
-      <div class="adv" @click="adv"><Icon name="bolt" :size="14" />高级设置 → s-ui 原面板</div>
-    </div>
+    <template v-if="kind === 'reality'">
+      <div class="fld"><label>握手目标 dest(真站点,需 TLS1.3 且非 CDN)</label><input v-model="dest" />
+        <div class="fnote">Reality 借这个站点的证书,SNI 也用它;客户端看起来就是在访问它。</div></div>
+      <div class="fnote">私钥/公钥/short-id 由 s-ui 生成,保存时自动填。</div>
+    </template>
+    <template v-else>
+      <div class="fld"><label>证书 fullchain.pem</label><input v-model="certPath" /></div>
+      <div class="fld"><label>私钥 privkey.pem</label><input v-model="keyPath" /></div>
+      <div class="fnote">用 certbot 申的 Let's Encrypt 证书路径;证书续期后要重启 s-ui 才会重新读取。</div>
+      <div v-if="kind === 'hy2'" class="swrow"><div class="tx"><b>忽略客户端带宽宣告</b><span>不按客户端报的速率限速,交给 BBR 跑满</span></div><Switch v-model="ignoreBw" /></div>
+    </template>
 
-    <div v-else>
-      <div class="frow"><div class="fld"><label>备注 / tag</label><input v-model="tTag" /></div><div class="fld"><label>监听端口</label><input v-model="tPort" /></div></div>
-      <div class="ssec">拥塞</div>
-      <div class="frow"><div class="fld"><label>拥塞控制</label><XSelect v-model="cc" :options="['bbr', 'cubic', 'new_reno']" /></div><div class="fld"><label>UDP relay</label><XSelect v-model="relay" :options="['native', 'quic']" /></div></div>
-      <div class="ssec">TLS</div>
-      <div class="frow"><div class="fld"><label>证书</label><XSelect v-model="certT" :options="['ACME 自动', '自签名']" /></div><div class="fld"><label>SNI</label><input v-model="sniT" /></div></div>
-      <div class="fnote">凭证在会员「配置」里自动分配(uuid + password)。</div>
-      <div class="adv" @click="adv"><Icon name="bolt" :size="14" />高级设置 → s-ui 原面板</div>
+    <div v-if="err" class="lerr">{{ err }}</div>
+    <div class="fnote" style="margin-top:10px">
+      端口要在防火墙放行:UDP 用于 Hysteria2 / TUIC,TCP 用于 Reality。
+      <span class="adv" @click="openSui"><Icon name="bolt" :size="13" />更细的参数(mux / 传输 / ACME)→ s-ui 原面板</span>
     </div>
-
-    <div class="marow"><button class="btn" @click="saveNode">保存节点</button><button class="gh" @click="emit('close')">取消</button></div>
+    <div class="marow"><button class="btn" :disabled="busy" @click="create">{{ busy ? '创建中…' : '创建节点' }}</button><button class="gh" @click="emit('close')">取消</button></div>
   </Modal>
 </template>
+
+<style scoped>
+.lerr{font-size:12px;color:var(--crit);font-weight:600;margin-top:10px}
+</style>

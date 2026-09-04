@@ -9,7 +9,7 @@ const props = defineProps<{ name: string }>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'edit', name: string): void }>()
 const m = computed(() => store.members.find(x => x.name === props.name)!)
 async function revoke() {
-  if (m.value.id == null) { toast('演示数据无法吊销'); emit('close'); return }
+  if (m.value.id == null) { toast('该会员没有 id,无法吊销'); emit('close'); return }
   const id = m.value.id, nm = m.value.name
   // 乐观移除:列表立即更新、抽屉立即关(s-ui 删除会重载 sing-box,较慢,后台跑)
   const idx = store.members.findIndex(x => x.id === id)
@@ -25,8 +25,12 @@ async function revoke() {
     toast('吊销失败: ' + (e?.message || e))
   }
 }
-const mx = computed(() => Math.max(...store.members.map(x => x.gb)))
+// 空列表 / 全 0 时兜底 1,避免除零得到 NaN%
+const mx = computed(() => Math.max(1, ...store.members.map(x => x.gb)))
 const url = computed(() => store.subUrl(props.name))
+// s-ui 的 api/resetTraffic 是【全局】清零(无 client 参数),按单人用会把所有人流量清掉;
+// 单人重置只能去 s-ui 原面板操作,这里不做假按钮。
+function openSui() { window.open(store.suiUrl(), '_blank') }
 function onKey(e: KeyboardEvent) { if (e.key === 'Escape') emit('close') }
 onMounted(() => document.addEventListener('keydown', onKey))
 onUnmounted(() => document.removeEventListener('keydown', onKey))
@@ -42,15 +46,15 @@ onUnmounted(() => document.removeEventListener('keydown', onKey))
       <button class="mox" aria-label="关闭" @click="emit('close')"><Icon name="close" :size="14" /></button>
     </div>
     <div class="qr" v-html="qrSvg(url)" />
-    <div class="qrcap">示例二维码 · 上线后服务端生成可扫码</div>
+    <div class="qrcap">扫码导入订阅(Clash Verge / mihomo)</div>
     <div class="url"><code>{{ url }}</code><button class="cpy" @click="copyText(url)">复制</button></div>
-    <div class="lb" style="margin-top:8px">本月用量</div>
+    <div class="lb" style="margin-top:8px">累计用量</div>
     <div class="urow"><b class="num">{{ m.gb }} GB</b><span>占比 {{ (m.gb / mx * 100).toFixed(0) }}%</span></div>
     <div class="ubar"><i :style="{ width: (m.gb / mx * 100) + '%' }" /></div>
     <div class="kv"><span>状态</span><b>{{ m.on ? '在线' : '离线' }}</b></div>
     <div class="kv"><span>到期</span><b>{{ m.exp }}</b></div>
     <div class="kv"><span>订阅格式</span><b>clash</b></div>
-    <div class="dract"><button class="g" @click="toast('重置流量:下一步接入')">重置流量</button><button class="r" @click="revoke">吊销会员</button></div>
+    <div class="dract"><button class="g" @click="openSui">在 s-ui 重置流量</button><button class="r" @click="revoke">吊销会员</button></div>
   </div>
 </template>
 <style scoped>

@@ -26,22 +26,26 @@ const desc = ref('')
 const autoReset = ref(false)
 const resetDays = ref('30')
 const delayStart = ref(false)
-const bindReality = ref(true)
-const bindHy2 = ref(true)
+// 绑定节点 = s-ui 真实入站,默认全选;没有入站时不给建(建了也是死链接)
+const picked = ref<number[]>(store.nodes.map(n => n.id))
+function togglePick(id: number) {
+  const i = picked.value.indexOf(id)
+  if (i >= 0) picked.value.splice(i, 1); else picked.value.push(id)
+}
 const uuid = ref(ruuid())
 const flow = ref('xtls-rprx-vision')
 const pw = ref(rb64(16))
 const ext = ref('')
 
-const sub = () => `http://${store.domain}/get/${name.value || '<名称>'}`
+const sub = () => store.subUrl(name.value || '<名称>')
 const busy = ref(false)
 async function save() {
   if (isEdit) { window.open(store.suiUrl(), '_blank'); toast('会员编辑走 s-ui(凭证不可回读,面板改会清空 config)'); emit('close'); return }
   const nm = name.value.trim()
   if (!nm) { toast('请填名称'); return }
-  const inbounds = [...(bindHy2.value ? [1] : []), ...(bindReality.value ? [2] : [])]
+  if (!picked.value.length) { toast('请至少选一个节点'); return }
   const expiryMs = expiry.value ? new Date(expiry.value + 'T00:00:00').getTime() : 0
-  const obj = buildClient(nm, { inbounds, volumeGiB: Number(volume.value) || 0, expiryMs, uuid: uuid.value, hy2pw: pw.value, group: group.value })
+  const obj = buildClient(nm, { inbounds: [...picked.value], volumeGiB: Number(volume.value) || 0, expiryMs, uuid: uuid.value, hy2pw: pw.value, group: group.value })
   busy.value = true
   try {
     await apiSave('clients', 'new', obj)
@@ -72,7 +76,12 @@ async function save() {
       <div v-if="autoReset" class="fld"><label>重置周期(天)</label><input v-model="resetDays" /></div>
       <div class="swrow"><div class="tx"><b>延迟启动</b><span>首次连接才开始计时到期</span></div><Switch v-model="delayStart" /></div>
       <label class="lb" style="display:block;margin:14px 0 8px">绑定节点</label>
-      <div class="frow"><label class="chk"><input type="checkbox" v-model="bindReality" />VLESS · Reality</label><label class="chk"><input type="checkbox" v-model="bindHy2" />Hysteria2</label></div>
+      <div v-if="store.nodes.length" class="frow">
+        <label v-for="n in store.nodes" :key="n.id" class="chk">
+          <input type="checkbox" :checked="picked.includes(n.id)" @change="togglePick(n.id)" />{{ n.name }} · {{ n.proto }}
+        </label>
+      </div>
+      <div v-else class="fnote">还没有任何入站节点 —— 先跑 <code>ensure-nodes.sh</code> 或在 s-ui 建节点,否则建出来的会员没有可用链接。</div>
     </div>
 
     <div v-else-if="tab === 'config'">

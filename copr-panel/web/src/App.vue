@@ -26,9 +26,10 @@ const NAV: { id: ViewId; label: string; icon: string }[] = [
   { id: 'settings', label: '设置', icon: 'settings' },
 ]
 const VIEWS: Record<ViewId, any> = { dash: Dashboard, nodes: Nodes, members: Members, sub: Sub, traffic: Traffic, settings: Settings }
-const SUB: Record<ViewId, string> = { dash: `${store.domain} · Hysteria2`, nodes: '入站与协议', members: '订阅 · 流量 · 到期', sub: '地址与模块化规则', traffic: '用量统计', settings: '面板与安全' }
+const SUB: Record<ViewId, string> = { dash: '概览与实时吞吐', nodes: '入站与协议', members: '订阅 · 流量 · 到期', sub: '地址与模块化规则', traffic: '用量统计', settings: '面板与安全' }
 
 const user = ref('')
+const me = ref('')
 const pass = ref('')
 const loggingIn = ref(false)
 const loginErr = ref('')
@@ -37,7 +38,7 @@ async function doLogin() {
   try {
     const res: any = await login(user.value, pass.value)
     if (res && res.success === false) { loginErr.value = res.msg || '账号或密码错误'; loggingIn.value = false; return }
-    await store.load(); store.loggedIn = true
+    await store.load(); me.value = user.value; store.loggedIn = true
   } catch (e: any) {
     // 后端不可达(网络/域名 fake-ip/未部署)→ 明确报错,不再静默假装演示数据
     loginErr.value = '后端不可达:确认浏览器能访问该域名(本机 Clash 是否把它 fake-ip?)、后端是否已部署'
@@ -73,7 +74,7 @@ onMounted(async () => { try { await store.load() } catch { /* not logged in */ }
         </button>
       </nav>
       <div class="spacer" />
-      <div class="auser"><div class="av">A</div><div><div class="un">admin</div><div class="ur">管理员</div></div>
+      <div class="auser"><div class="av">{{ (me || '?')[0].toUpperCase() }}</div><div><div class="un">{{ me || 's-ui 用户' }}</div><div class="ur">管理员</div></div>
         <button class="lo" aria-label="退出" @click="store.loggedIn = false"><Icon name="logout" :size="16" /></button>
       </div>
     </aside>
@@ -82,7 +83,7 @@ onMounted(async () => { try { await store.load() } catch { /* not logged in */ }
       <header class="top">
         <div><h2>{{ NAV.find(n => n.id === store.view)?.label }}</h2><div class="tsub">{{ SUB[store.view] }}</div></div>
         <div class="sp" />
-        <span class="chip" :class="store.live ? 'on' : 'gray'">{{ store.live ? '线上' : '演示数据' }}</span>
+        <span class="chip" :class="store.live ? 'on' : 'gray'">{{ store.live ? '线上' : '未连接' }}</span>
         <button class="icbtn" aria-label="主题" @click="store.toggleTheme()"><Icon name="theme" :size="18" /></button>
       </header>
       <div class="view"><component :is="VIEWS[store.view]" /></div>

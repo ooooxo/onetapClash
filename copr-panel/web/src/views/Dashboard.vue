@@ -67,12 +67,12 @@ onUnmounted(() => clearInterval(timer))
     <div v-for="s in stats" :key="s.k" class="stat">
       <div class="k"><div class="ti"><Icon :name="s.icon" :size="15" /></div><span>{{ s.k }}</span></div>
       <div class="v">{{ s.v.toLocaleString() }}<u v-if="s.u">{{ s.u }}</u></div>
-      <div class="d">{{ store.live ? '实时' : '演示数据' }}</div>
+      <div class="d">{{ store.live ? '实时' : '未连接' }}</div>
     </div>
   </div>
   <div class="grid g2">
     <div class="panel">
-      <div class="sect"><h3>实时吞吐</h3><div class="sp" /><span class="chip" :class="store.live ? 'on' : 'gray'">{{ store.live ? '每 3s' : '演示' }}</span></div>
+      <div class="sect"><h3>实时吞吐</h3><div class="sp" /><span class="chip" :class="store.live ? 'on' : 'gray'">{{ store.live ? '每 3s' : '未连接' }}</span></div>
       <div class="rrow">
         <div class="rc"><span class="rl">↑ 上行</span><b class="rv">{{ fmtR(curUp) }}</b></div>
         <div class="rc"><span class="rl">↓ 下行</span><b class="rv">{{ fmtR(curDown) }}</b></div>
@@ -83,7 +83,7 @@ onUnmounted(() => clearInterval(timer))
         <path :d="areaPath" fill="url(#tg)" />
         <path :d="linePath" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
-      <div v-else class="empty">{{ store.live ? '采样中…(3s 后出曲线)' : '演示模式' }}</div>
+      <div v-else class="empty">{{ store.live ? '采样中…(3s 后出曲线)' : '未连接' }}</div>
       <div class="nstrip">
         <span v-for="n in store.nodes" :key="n.name" class="nchip" :class="{ on: nodeActive(n) }">
           <span class="dot" :class="{ on: nodeActive(n) }" />{{ n.name }} · {{ n.net }}

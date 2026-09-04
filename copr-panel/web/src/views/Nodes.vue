@@ -7,16 +7,24 @@ import Icon from '../components/Icon.vue'
   <div class="sect"><h3 style="font-size:15px;font-weight:650">节点</h3><div class="sp" style="flex:1" />
     <button class="pri" @click="ui.nodeOpen = true"><Icon name="add" :size="15" />开设节点</button>
   </div>
-  <div class="grid g2">
-    <div v-for="n in store.nodes" :key="n.name" class="panel">
+  <div v-if="store.nodes.length" class="grid g2">
+    <div v-for="n in store.nodes" :key="n.id" class="panel">
       <div class="nh"><div class="ti"><Icon :name="n.proto === 'vless' ? 'shield' : 'bolt'" :size="20" /></div>
         <div style="flex:1"><b>{{ n.name }}</b><br><span>:{{ n.port }} · {{ n.net }}</span></div>
-        <span class="chip on">在线</span>
+        <!-- onlineInbounds 来自 s-ui onlines,只说明"此刻有没有连接",不是节点死活 -->
+        <span class="chip" :class="store.onlineInbounds.includes(n.name) ? 'on' : 'gray'">
+          {{ store.onlineInbounds.includes(n.name) ? '有连接' : '空闲' }}
+        </span>
       </div>
       <div class="kv"><span>协议</span><b>{{ n.proto }}</b></div>
       <div class="kv"><span>端口</span><b>{{ n.port }} / {{ n.net }}</b></div>
+      <div class="kv"><span>入站 id</span><b>{{ n.id }}</b></div>
     </div>
   </div>
+  <div v-else class="panel"><p style="font-size:13px;color:var(--ink-3);line-height:1.7">
+    还没有入站节点。服务器上跑 <code>deploy/ensure-nodes.sh</code> 会自动开好 Hysteria2 + VLESS-Reality;
+    也可以在 s-ui 原面板手动建。没有节点时新建的会员拿不到可用链接。
+  </p></div>
   <div class="panel" style="margin-top:16px"><div class="sect"><h3>提示</h3></div>
     <p style="font-size:13px;color:var(--ink-3);line-height:1.7">开设 / 改节点会让 s-ui 重载 sing-box,在线用户短暂重连。加 / 删会员通常不影响连接。</p>
   </div>

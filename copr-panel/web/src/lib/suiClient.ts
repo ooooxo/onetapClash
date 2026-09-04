@@ -3,7 +3,7 @@ import { rb64, ruuid } from './rand'
 // 构造 s-ui client 对象(含各协议 config),用于 save('clients','new', obj)。
 // 与 s-ui 前端 randomConfigs 结构一致。
 export interface BuildOpts {
-  inbounds?: number[]      // 绑定入站 id;默认 [1,2] = HY2 + VLESS
+  inbounds?: number[]      // 绑定入站 id —— 必须传 s-ui 真实 id(store.nodes[].id),没有默认值
   volumeGiB?: number       // 流量上限(GiB,0=不限)
   expiryMs?: number        // 到期时间戳(ms,0=长期)
   uuid?: string
@@ -12,6 +12,8 @@ export interface BuildOpts {
 }
 
 export function buildClient(name: string, o: BuildOpts = {}) {
+  // 绑不到真实入站的会员 = 订阅里没有节点 = 链接不可用。宁可报错也不要造一个坏会员。
+  if (!o.inbounds || o.inbounds.length === 0) throw new Error('未选择节点:请先在「节点」页确认已有入站')
   const u1 = o.uuid || ruuid()
   const u2 = ruuid()
   const mp = rb64(10)
@@ -33,7 +35,7 @@ export function buildClient(name: string, o: BuildOpts = {}) {
   }
   return {
     enable: true, name, config,
-    inbounds: o.inbounds && o.inbounds.length ? o.inbounds : [1, 2],
+    inbounds: o.inbounds,
     links: [],
     volume: Math.round((o.volumeGiB || 0) * 1073741824),
     expiry: o.expiryMs || 0,
