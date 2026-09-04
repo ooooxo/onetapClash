@@ -56,12 +56,15 @@ REALITY_DEST="${REALITY_DEST:-www.apple.com}"; WANT_REALITY="${WANT_REALITY:-yes
 HOP_ENABLE="${HOP_ENABLE:-yes}"
 HY2_HOP_PORTS="${HY2_HOP_PORTS:-20000-25000}"   # UDP 端口段,全部重定向到 HY2_PORT
 HY2_HOP_INTERVAL="${HY2_HOP_INTERVAL:-30}"
-HY2_BRUTAL="${HY2_BRUTAL:-auto}"   # auto=实测带宽后按 80% 自动设;no=用 BBR;也可直接填下面两个数
-HY2_UP_MBPS="${HY2_UP_MBPS:-}"     # 填了就启用 Brutal 固定速率(需同时关掉 ignore_client_bandwidth)
+# Brutal 固定速率:两个都填才启用,否则用 BBR。
+# 这里【不做自动实测】—— Brutal 要的是「客户端↔服务器」的实际吞吐(比如广东→东京),
+# 而在服务器上只能测到「服务器出口」(东京→东京可以跑到 500Mbps),两者毫无关系。
+# 按服务器出口设 Brutal 会严重高估;Brutal 不退让,高估=持续丢包,比不开还糟。
+# 正确做法:用客户端实测的稳定速率的 ~80% 填在这里。
+HY2_UP_MBPS="${HY2_UP_MBPS:-}"
 HY2_DOWN_MBPS="${HY2_DOWN_MBPS:-}"
 HY2_OBFS="${HY2_OBFS:-yes}"        # salamander 混淆,默认开
 HY2_OBFS_PASSWORD="${HY2_OBFS_PASSWORD:-}"
-BW_CACHE="${BW_CACHE:-/etc/onetap/bandwidth.env}"
 HARDEN="${HARDEN:-yes}"            # fail2ban + ufw + sshd 公钥登录
 SSH_PORT="${SSH_PORT:-22}"
 
@@ -214,40 +217,6 @@ EOF
   nginx -t && { systemctl enable nginx >/dev/null 2>&1; systemctl restart nginx; ok "nginx 就绪"; } || die "nginx 校验失败"
 }
 
-# ── 实测带宽 → Brutal 速率(默认开启;写死数值对换机器就是错的,所以自己测)──────
-# Brutal 是固定速率拥塞控制:不像 BBR 那样一丢包就退让,所以在国内→海外这种高丢包
-# 链路上速度稳得多。代价是设得比实际可用带宽高会造成缓冲膨胀,故取实测值的 80%。
-_bandwidth(){
-  [[ "$(lc "$HY2_BRUTAL")" == "no" ]] && { warn "HY2_BRUTAL=no,hy2 用 BBR"; return; }
-  [[ -n "$HY2_UP_MBPS" && -n "$HY2_DOWN_MBPS" ]] && { ok "Brutal 速率(来自配置): ↑${HY2_UP_MBPS} / ↓${HY2_DOWN_MBPS} Mbps"; return; }
-  if [[ -f "$BW_CACHE" ]]; then
-    . "$BW_CACHE"
-    [[ -n "${HY2_UP_MBPS:-}" && -n "${HY2_DOWN_MBPS:-}" ]] && { ok "Brutal 速率(缓存 $BW_CACHE): ↑${HY2_UP_MBPS} / ↓${HY2_DOWN_MBPS} Mbps"; return; }
-  fi
-  log "实测出口带宽(约 25s,结果缓存,后续重跑不再测)..."
-  local best=0 v
-  for u in "http://speedtest.tokyo2.linode.com/100MB-tokyo2.bin" \
-           "https://ash-speed.hetzner.com/100MB.bin"; do
-    v="$(curl -so /dev/null -w '%{speed_download}' --max-time 10 "$u" 2>/dev/null || echo 0)"
-    v="${v%%.*}"; [[ "${v:-0}" -gt "$best" ]] && best="$v"
-  done
-  local up; up="$(curl -so /dev/null -w '%{speed_upload}' --max-time 10 -X POST \
-      --data-binary @/dev/zero https://speed.cloudflare.com/__up 2>/dev/null || echo 0)"; up="${up%%.*}"
-  # B/s → Mbps,再取 80%
-  local dmb=$(( best * 8 / 1000000 * 8 / 10 ))
-  local umb=$(( ${up:-0} * 8 / 1000000 * 8 / 10 ))
-  # 测不出来就别乱设 —— 宁可退回 BBR,也不要按错误速率硬推
-  if (( dmb < 5 || umb < 5 )); then
-    warn "带宽实测失败(↓${dmb} ↑${umb} Mbps),本次退回 BBR;可在 config.env 手填 HY2_UP_MBPS/HY2_DOWN_MBPS"
-    HY2_UP_MBPS=""; HY2_DOWN_MBPS=""; return
-  fi
-  (( dmb > 1000 )) && dmb=1000; (( umb > 1000 )) && umb=1000
-  HY2_UP_MBPS="$umb"; HY2_DOWN_MBPS="$dmb"
-  mkdir -p "$(dirname "$BW_CACHE")"
-  printf 'HY2_UP_MBPS=%s\nHY2_DOWN_MBPS=%s\n' "$umb" "$dmb" > "$BW_CACHE"
-  ok "Brutal 速率(实测 80%): ↑${umb} / ↓${dmb} Mbps  → 缓存到 $BW_CACHE"
-}
-
 # ── 端口跳跃:抗运营商对固定 UDP 端口的 QoS ──────────────────────────────────
 _hopping(){
   HY2_PORT="$HY2_PORT" HY2_HOP_PORTS="$HY2_HOP_PORTS" HOP_ENABLE="$HOP_ENABLE" \
@@ -319,7 +288,6 @@ main(){
   _deps
   _sui
   _certs
-  _bandwidth
   _converter
   _panel
   _nginx
