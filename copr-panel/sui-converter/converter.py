@@ -19,6 +19,14 @@ RULES_FILE = os.environ.get("RULES_FILE", os.path.join(BASE, "rules.json"))
 RULES_DEFAULT = os.path.join(BASE, "rules.default.json")
 # s-ui 原生订阅前缀:/get/<名> 未在 users.json 时回源 SUI_SUB_BASE+<名>(面板建的会员即刻可用)
 SUI_SUB_BASE = os.environ.get("SUI_SUB_BASE", "http://127.0.0.1:2096/sub/")
+# 端口跳跃:服务端把 UDP <段> 全部 REDIRECT 到 hy2 真实端口(见 deploy/ensure-hopping.sh),
+# 这里只负责把段告诉客户端。运营商对单个固定 UDP 端口的 QoS 是 hy2 掉速断流的主因。
+HY2_HOP_PORTS = os.environ.get("HY2_HOP_PORTS", "")        # 形如 "20000-25000";空=不启用
+HY2_HOP_INTERVAL = os.environ.get("HY2_HOP_INTERVAL", "30") # 秒,支持 "15-30" 随机区间
+# Brutal 固定速率(Mbps)。设了就在订阅里下发 up/down,服务端 ignore_client_bandwidth 必须为 false。
+# BBR 遇丢包会退让,在国内到海外这种高丢包链路上速度塌方;Brutal 不退让,按固定速率推。
+HY2_UP_MBPS = os.environ.get("HY2_UP_MBPS", "")
+HY2_DOWN_MBPS = os.environ.get("HY2_DOWN_MBPS", "")
 
 
 def load_users():
@@ -109,6 +117,15 @@ def _p_hy2(uri):
     if q.get("sni", [None])[0]: p["sni"] = q["sni"][0]
     alpn = q.get("alpn", [None])[0]
     p["alpn"] = alpn.split(",") if alpn else ["h3"]
+    # 端口跳跃:mihomo 配了 ports 就忽略 port,但仍保留 port 供不支持跳跃的客户端回退
+    if HY2_HOP_PORTS:
+        p["ports"] = HY2_HOP_PORTS
+        # 纯数字要发 int;"15-30" 这种随机区间才是字符串
+        p["hop-interval"] = int(HY2_HOP_INTERVAL) if HY2_HOP_INTERVAL.isdigit() else HY2_HOP_INTERVAL
+    # Brutal:客户端声明带宽 → 服务端启用固定速率拥塞控制(抗丢包)
+    if HY2_UP_MBPS and HY2_DOWN_MBPS:
+        p["up"] = f"{HY2_UP_MBPS} Mbps"
+        p["down"] = f"{HY2_DOWN_MBPS} Mbps"
     if q.get("obfs", [None])[0] in ("salamander",):
         p["obfs"] = "salamander"
         if q.get("obfs-password", [None])[0]: p["obfs-password"] = q["obfs-password"][0]
@@ -258,12 +275,22 @@ def build_clash_config(proxies, userinfo, mgmt_domain=None):
         return 2
     auto_order = [p["name"] for p in sorted(proxies, key=prio)]
 
+    # 默认 fallback 而不是 url-test:url-test 只比 HTTP 延迟,不看丢包 —— hy2 延迟低但
+    # 丢包严重时它依然会选 hy2,用户感受就是"延迟好看但很卡",而且延迟抖动会来回横跳。
+    # fallback 只在主节点【真的探测不通】时才切,主节点恒定是 auto_order[0](hy2),
+    # 即"以 hy2 为准,挂了才退到 Reality"。想要选最快就把 auto_group_type 改成 url-test。
+    auto_type = rc.get("auto_group_type", "fallback")
+
     def grp(name):
-        # 自动选择 = url-test 选最快:HY2 置顶为初始默认(UDP 延迟通常也最低,平时稳定在它),
-        # tolerance 粘滞——其他节点快出 100ms 以上才切,防止临界节点活/死横跳导致连接反复重置
         if name == "♻️ 自动选择":
-            return {"name": name, "type": "url-test", "url": "http://www.gstatic.com/generate_204",
-                    "interval": 180, "tolerance": 100, "proxies": list(auto_order)}
+            g = {"name": name, "url": "http://www.gstatic.com/generate_204",
+                 "proxies": list(auto_order), "interval": 60, "timeout": 3000,
+                 "max-failed-times": 3}
+            if auto_type == "url-test":
+                g.update({"type": "url-test", "tolerance": 100, "interval": 180})
+            else:
+                g["type"] = "fallback"
+            return g
         return {"name": name, "type": "select", "proxies": [*auto_order, "DIRECT"]}
 
     config = {
@@ -273,6 +300,15 @@ def build_clash_config(proxies, userinfo, mgmt_domain=None):
         "ipv6": False,
         "mixed-port": 7890, "allow-lan": True, "mode": "rule", "log-level": "info",
         "external-controller": "127.0.0.1:9090",
+        # ── 线路稳定性(mihomo 客户端侧)────────────────────────────────────
+        # tcp-concurrent:对多个解析结果并发握手取最快,单条路径丢包/被阻断时不至于卡死
+        # unified-delay:统一测速口径(去掉握手差异),避免因延迟抖动误判而频繁切节点
+        # store-selected:记住手动选的节点,更新订阅后不被重置回默认
+        "tcp-concurrent": True,
+        "unified-delay": True,
+        "find-process-mode": "off",
+        "keep-alive-interval": 15,
+        "profile": {"store-selected": True},
         "dns": build_dns([mgmt_domain] if mgmt_domain else None),
         "proxies": proxies,
         "proxy-groups": [grp(g) for g in groups_cfg],

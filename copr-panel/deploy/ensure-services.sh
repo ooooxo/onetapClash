@@ -69,6 +69,8 @@ cat > /usr/local/bin/onetap-healthcheck <<EOF
 # 端口不通就重启对应服务。进程活着但端口没起(sing-box 配置炸了)systemd 察觉不到。
 set -u
 curl -sf --max-time 5 "http://${CONV_ADDR}/health" >/dev/null || systemctl restart sui-converter
+# 端口跳跃的 nat 规则会被 ufw reload / reset 冲掉,这里每分钟幂等重放一次
+[ -x /usr/local/bin/onetap-hopping ] && /usr/local/bin/onetap-hopping
 curl -so /dev/null --max-time 5 "http://${SUI_ADDR}/" || systemctl restart s-ui
 systemctl is-active --quiet nginx || systemctl restart nginx
 EOF

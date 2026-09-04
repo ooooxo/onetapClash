@@ -42,6 +42,16 @@ SUI_SUB_BASE="${SUI_SUB_BASE:-http://127.0.0.1:${SUI_SUB_PORT}${SUI_SUB_PATH}}"
 HY2_TAG="${HY2_TAG:-quick}"; HY2_PORT="${HY2_PORT:-443}"
 REALITY_TAG="${REALITY_TAG:-reality}"; REALITY_PORT="${REALITY_PORT:-8443}"
 REALITY_DEST="${REALITY_DEST:-www.apple.com}"; WANT_REALITY="${WANT_REALITY:-yes}"
+# 线路稳定/速率(见 ensure-hopping.sh 与 converter 顶部注释)
+HOP_ENABLE="${HOP_ENABLE:-yes}"
+HY2_HOP_PORTS="${HY2_HOP_PORTS:-20000-25000}"   # UDP 端口段,全部重定向到 HY2_PORT
+HY2_HOP_INTERVAL="${HY2_HOP_INTERVAL:-30}"
+HY2_BRUTAL="${HY2_BRUTAL:-auto}"   # auto=实测带宽后按 80% 自动设;no=用 BBR;也可直接填下面两个数
+HY2_UP_MBPS="${HY2_UP_MBPS:-}"     # 填了就启用 Brutal 固定速率(需同时关掉 ignore_client_bandwidth)
+HY2_DOWN_MBPS="${HY2_DOWN_MBPS:-}"
+HY2_OBFS="${HY2_OBFS:-yes}"        # salamander 混淆,默认开
+HY2_OBFS_PASSWORD="${HY2_OBFS_PASSWORD:-}"
+BW_CACHE="${BW_CACHE:-/etc/onetap/bandwidth.env}"
 HARDEN="${HARDEN:-yes}"            # fail2ban + ufw + sshd 公钥登录
 SSH_PORT="${SSH_PORT:-22}"
 
@@ -107,6 +117,8 @@ EOF
 # ── converter(订阅转换 + 分流/防泄漏注入)──────────────────────────────────
 _converter(){
   log "部署 converter(保留 users.json / rules.json)..."
+  # 没开端口跳跃就不要往订阅里写 ports,否则客户端会往没放行的端口段发包
+  HOP_PORTS_EFF=""; [[ "$(lc "$HOP_ENABLE")" != "no" ]] && HOP_PORTS_EFF="$HY2_HOP_PORTS"
   mkdir -p "$CONV_DIR"
   for f in converter.py users.json rules.json; do
     [[ -f "$CONV_DIR/$f" ]] && cp "$CONV_DIR/$f" "$BK/"
@@ -128,6 +140,10 @@ Environment=ADMIN_SECRET=${CONV_ADMIN_SECRET}
 Environment=USERS_FILE=${CONV_DIR}/users.json
 Environment=RULES_FILE=${CONV_DIR}/rules.json
 Environment=SUI_SUB_BASE=${SUI_SUB_BASE}
+Environment=HY2_HOP_PORTS=${HOP_PORTS_EFF}
+Environment=HY2_HOP_INTERVAL=${HY2_HOP_INTERVAL}
+Environment=HY2_UP_MBPS=${HY2_UP_MBPS}
+Environment=HY2_DOWN_MBPS=${HY2_DOWN_MBPS}
 ExecStart=${CONV_DIR}/venv/bin/python ${CONV_DIR}/converter.py
 Restart=always
 RestartSec=3
@@ -182,12 +198,54 @@ EOF
   nginx -t && { systemctl enable nginx >/dev/null 2>&1; systemctl restart nginx; ok "nginx 就绪"; } || die "nginx 校验失败"
 }
 
+# ── 实测带宽 → Brutal 速率(默认开启;写死数值对换机器就是错的,所以自己测)──────
+# Brutal 是固定速率拥塞控制:不像 BBR 那样一丢包就退让,所以在国内→海外这种高丢包
+# 链路上速度稳得多。代价是设得比实际可用带宽高会造成缓冲膨胀,故取实测值的 80%。
+_bandwidth(){
+  [[ "$(lc "$HY2_BRUTAL")" == "no" ]] && { warn "HY2_BRUTAL=no,hy2 用 BBR"; return; }
+  [[ -n "$HY2_UP_MBPS" && -n "$HY2_DOWN_MBPS" ]] && { ok "Brutal 速率(来自配置): ↑${HY2_UP_MBPS} / ↓${HY2_DOWN_MBPS} Mbps"; return; }
+  if [[ -f "$BW_CACHE" ]]; then
+    . "$BW_CACHE"
+    [[ -n "${HY2_UP_MBPS:-}" && -n "${HY2_DOWN_MBPS:-}" ]] && { ok "Brutal 速率(缓存 $BW_CACHE): ↑${HY2_UP_MBPS} / ↓${HY2_DOWN_MBPS} Mbps"; return; }
+  fi
+  log "实测出口带宽(约 25s,结果缓存,后续重跑不再测)..."
+  local best=0 v
+  for u in "http://speedtest.tokyo2.linode.com/100MB-tokyo2.bin" \
+           "https://ash-speed.hetzner.com/100MB.bin"; do
+    v="$(curl -so /dev/null -w '%{speed_download}' --max-time 10 "$u" 2>/dev/null || echo 0)"
+    v="${v%%.*}"; [[ "${v:-0}" -gt "$best" ]] && best="$v"
+  done
+  local up; up="$(curl -so /dev/null -w '%{speed_upload}' --max-time 10 -X POST \
+      --data-binary @/dev/zero https://speed.cloudflare.com/__up 2>/dev/null || echo 0)"; up="${up%%.*}"
+  # B/s → Mbps,再取 80%
+  local dmb=$(( best * 8 / 1000000 * 8 / 10 ))
+  local umb=$(( ${up:-0} * 8 / 1000000 * 8 / 10 ))
+  # 测不出来就别乱设 —— 宁可退回 BBR,也不要按错误速率硬推
+  if (( dmb < 5 || umb < 5 )); then
+    warn "带宽实测失败(↓${dmb} ↑${umb} Mbps),本次退回 BBR;可在 config.env 手填 HY2_UP_MBPS/HY2_DOWN_MBPS"
+    HY2_UP_MBPS=""; HY2_DOWN_MBPS=""; return
+  fi
+  (( dmb > 1000 )) && dmb=1000; (( umb > 1000 )) && umb=1000
+  HY2_UP_MBPS="$umb"; HY2_DOWN_MBPS="$dmb"
+  mkdir -p "$(dirname "$BW_CACHE")"
+  printf 'HY2_UP_MBPS=%s\nHY2_DOWN_MBPS=%s\n' "$umb" "$dmb" > "$BW_CACHE"
+  ok "Brutal 速率(实测 80%): ↑${umb} / ↓${dmb} Mbps  → 缓存到 $BW_CACHE"
+}
+
+# ── 端口跳跃:抗运营商对固定 UDP 端口的 QoS ──────────────────────────────────
+_hopping(){
+  HY2_PORT="$HY2_PORT" HY2_HOP_PORTS="$HY2_HOP_PORTS" HOP_ENABLE="$HOP_ENABLE" \
+    bash ensure-hopping.sh || warn "端口跳跃配置失败"
+}
+
 # ── 自动开节点:没有入站 = 会员链接必死,这步是「一键可用」的关键 ─────────────
 _nodes(){
   [[ -f "$TLS_CERT" ]] || { warn "没有证书,跳过自动开节点"; return; }
   DOMAIN="$DOMAIN" SUI_ADDR="$SUI_ADDR" SUI_BASE="$SUI_BASE" SUI_USER="$SUI_USER" SUI_PASS="$SUI_PASS" \
   HY2_TAG="$HY2_TAG" HY2_PORT="$HY2_PORT" REALITY_TAG="$REALITY_TAG" REALITY_PORT="$REALITY_PORT" \
   REALITY_DEST="$REALITY_DEST" WANT_REALITY="$WANT_REALITY" TLS_CERT="$TLS_CERT" TLS_KEY="$TLS_KEY" \
+  HY2_OBFS="$HY2_OBFS" HY2_OBFS_PASSWORD="$HY2_OBFS_PASSWORD" \
+  HY2_UP_MBPS="$HY2_UP_MBPS" HY2_DOWN_MBPS="$HY2_DOWN_MBPS" \
     bash ensure-nodes.sh || warn "自动开节点失败,可稍后单独重跑 ensure-nodes.sh"
 }
 
@@ -237,11 +295,13 @@ main(){
   _deps
   _sui
   _certs
+  _bandwidth
   _converter
   _panel
   _nginx
   _harden     # 必须在 _nodes 之前:harden.sh 会 ufw --force reset,放在后面会冲掉节点端口
   _nodes
+  _hopping
   _seed_users
   _services
   _selfcheck || warn "自检有告警,见上"

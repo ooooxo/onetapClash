@@ -20,6 +20,10 @@ REALITY_DEST="${REALITY_DEST:-www.apple.com}"
 TLS_CERT="${TLS_CERT:-}"
 TLS_KEY="${TLS_KEY:-}"
 WANT_REALITY="${WANT_REALITY:-yes}"
+HY2_OBFS="${HY2_OBFS:-yes}"              # salamander 混淆,抗主动探测/DPI 识别 QUIC
+HY2_OBFS_PASSWORD="${HY2_OBFS_PASSWORD:-}"   # 留空=沿用节点上已有的;都没有则自动生成
+HY2_UP_MBPS="${HY2_UP_MBPS:-}"           # 两个都填 = 启用 Brutal 固定速率
+HY2_DOWN_MBPS="${HY2_DOWN_MBPS:-}"
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -32,7 +36,8 @@ TLS_KEY="${TLS_KEY:-/etc/letsencrypt/live/${DOMAIN}/privkey.pem}"
 [[ -f "$TLS_CERT" && -f "$TLS_KEY" ]] || { echo "证书不存在: $TLS_CERT / $TLS_KEY —— 先申好证书再跑"; exit 1; }
 
 export DOMAIN SUI_ADDR SUI_BASE SUI_USER SUI_PASS HY2_TAG HY2_PORT \
-       REALITY_TAG REALITY_PORT REALITY_DEST TLS_CERT TLS_KEY WANT_REALITY
+       REALITY_TAG REALITY_PORT REALITY_DEST TLS_CERT TLS_KEY WANT_REALITY \
+       HY2_OBFS HY2_OBFS_PASSWORD HY2_UP_MBPS HY2_DOWN_MBPS
 
 python3 - <<'PY'
 import json, os, subprocess, secrets, sys, urllib.parse
@@ -93,7 +98,49 @@ def ensure_inbound(tag, build):
         die(f"建入站 {tag} 失败: {res.get('msg')}")
     print(f"[OK] 入站 {tag} 已创建")
 
-# ── Hysteria2(真实证书,UDP)────────────────────────────────────────────────
+# ── Hysteria2 的期望参数(创建与校正共用同一份定义)────────────────────────
+BRUTAL = bool(E["HY2_UP_MBPS"] and E["HY2_DOWN_MBPS"])
+OBFS_ON = E["HY2_OBFS"].lower() not in ("no", "0", "false")
+
+def hy2_tuning(existing_opts=None):
+    """返回 hy2 入站里与线路质量相关的字段。existing_opts 用于沿用已有的 obfs 密码。"""
+    out = {
+        # Brutal 由客户端声明带宽驱动,服务端必须【不要】忽略客户端带宽,否则退回 BBR
+        "ignore_client_bandwidth": not BRUTAL,
+    }
+    if OBFS_ON:
+        pw = E["HY2_OBFS_PASSWORD"]
+        if not pw and existing_opts:
+            pw = ((existing_opts.get("obfs") or {}).get("password")) or ""
+        if not pw:
+            pw = secrets.token_urlsafe(16)
+            print(f"[!] 生成 obfs 密码(请存进 config.env 的 HY2_OBFS_PASSWORD):{pw}")
+        out["obfs"] = {"type": "salamander", "password": pw}
+    return out
+
+def reconcile_hy2():
+    """节点已存在时,把 obfs / 拥塞控制校正到期望值 —— 只改这几项,其余原样保留。"""
+    cur = existing.get(E["HY2_TAG"])
+    if not cur:
+        return
+    want = hy2_tuning(cur)
+    drift = {k: v for k, v in want.items() if cur.get(k) != v}
+    if not OBFS_ON and "obfs" in cur:
+        drift["obfs"] = None
+    if not drift:
+        print(f"[skip] 入站 {E['HY2_TAG']} 的混淆/拥塞控制已是期望值")
+        return
+    new = dict(cur)
+    for k, v in drift.items():
+        if v is None:
+            new.pop(k, None)
+        else:
+            new[k] = v
+    res = save("inbounds", "edit", new)
+    if res.get("success") is not True:
+        die(f"校正入站 {E['HY2_TAG']} 失败: {res.get('msg')}")
+    print(f"[OK] 入站 {E['HY2_TAG']} 已校正:{', '.join(drift)}")
+
 def hy2():
     tls_id = ensure_tls(f"{E['DOMAIN']}-le", {
         "enabled": True, "server_name": E["DOMAIN"], "alpn": ["h3"],
@@ -101,11 +148,11 @@ def hy2():
     }, {"enabled": True, "server_name": E["DOMAIN"], "insecure": False, "alpn": ["h3"]})
     return {"id": 0, "type": "hysteria2", "tag": E["HY2_TAG"], "listen": "::",
             "listen_port": int(E["HY2_PORT"]), "tls_id": tls_id,
-            "ignore_client_bandwidth": True,       # 不按客户端宣告限速,交给 BBR
             "addrs": [{"server": E["DOMAIN"], "server_port": int(E["HY2_PORT"])}],
-            "out_json": {}}
+            "out_json": {}, **hy2_tuning()}
 
 ensure_inbound(E["HY2_TAG"], hy2)
+reconcile_hy2()
 opened.append((E["HY2_PORT"], "udp"))
 
 # ── VLESS + Vision + Reality(TCP)───────────────────────────────────────────
