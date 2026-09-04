@@ -118,7 +118,10 @@ server { listen 80; listen [::]:80; server_name ${DOMAIN};
   location ^~ /.well-known/acme-challenge/ { root /var/www/certbot; } location / { return 404; } }
 EOF
   ln -sf /etc/nginx/sites-available/acme-bootstrap /etc/nginx/sites-enabled/acme-bootstrap
-  rm -f /etc/nginx/sites-enabled/default
+  # 旧站点必须先摘掉:它引用的证书此刻可能不存在(首次签发/证书被删),
+  # 留着会让 nginx -t 失败 → nginx 起不来 → webroot 验证拿不到 token → 签发失败。
+  # _nginx 紧接着会重新生成并启用,不会丢配置。
+  rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/copr.conf /etc/nginx/sites-enabled/copr-sub.conf
   nginx -t >/dev/null 2>&1 && { systemctl reload nginx 2>/dev/null || systemctl restart nginx; } || systemctl restart nginx || true
   log "申请/续期 Let's Encrypt 证书..."
   certbot certonly --webroot -w /var/www/certbot -d "$DOMAIN" \
