@@ -78,16 +78,38 @@ _ask(){  # _ask VAR "提示" "默认" [secret];已有值不问;无 TTY 用默认
   printf -v "$var" '%s' "$input"
 }
 
+# 管理员密码:运行时输入,两次确认;直接回车则生成强密码。
+# 不鼓励把密码写进 config.env(会落盘),留空让它在这里问。
+SUI_PASS_GENERATED=0
+_ask_pass(){
+  [[ -n "${SUI_PASS:-}" ]] && return 0          # config.env / 环境变量已提供
+  if [[ ! -t 0 ]]; then                          # 无 TTY 又没给密码 → 只能报错,不能瞎猜
+    die "非交互运行时必须提供 SUI_PASS(环境变量或 config.env)"
+  fi
+  local p1 p2
+  while :; do
+    read -rsp "  s-ui 管理员密码(直接回车=自动生成强密码): " p1; echo
+    if [[ -z "$p1" ]]; then
+      SUI_PASS="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | cut -c1-20)"
+      SUI_PASS_GENERATED=1
+      return 0
+    fi
+    if (( ${#p1} < 8 )); then echo "  太短了,至少 8 位。"; continue; fi
+    read -rsp "  再输一次确认: " p2; echo
+    if [[ "$p1" != "$p2" ]]; then echo "  两次不一致,重来。"; continue; fi
+    SUI_PASS="$p1"; return 0
+  done
+}
+
 _prompt_config(){
   echo -e "${C}=== 部署参数(回车=默认)===${N}"
   _ask DOMAIN   "对外域名(必须已解析到本机)" ""
   [[ -n "$DOMAIN" ]] || die "域名必填"
-  # s-ui 账号密码是必需的:后面要用它调 API 自动开节点
   # 只有全量部署才需要 s-ui 账号密码(要用它调 API 装节点);更新模式不碰 s-ui
   if [[ "$MODE" == "full" ]]; then
+    echo -e "  ${Y}下面这组账号密码会被设为 s-ui 管理员凭据(面板登录用),已装过则会覆盖。${N}"
     _ask SUI_USER "s-ui 管理员账号" "admin"
-    _ask SUI_PASS "s-ui 管理员密码(新装则按此设定)" "" secret
-    [[ -n "$SUI_PASS" ]] || die "密码必填(自动开节点要用它调 s-ui API)"
+    _ask_pass
   fi
   TLS_CERT="${TLS_CERT:-/etc/letsencrypt/live/${DOMAIN}/fullchain.pem}"
   TLS_KEY="${TLS_KEY:-/etc/letsencrypt/live/${DOMAIN}/privkey.pem}"
@@ -305,6 +327,10 @@ main(){
   echo -e "  ${G}▍面板(浏览器打开,登录=s-ui 账号密码):${N} https://${DOMAIN}${ps}${PANEL_PATH}"
   echo -e "  ${G}▍s-ui 原面板(深水区):${N} http://${DOMAIN}:${SUI_PORT}${SUI_BASE}"
   echo -e "  ${G}▍订阅地址:${N} https://${DOMAIN}${ps}/get/<会员名>"
+  echo -e "  ${G}▍面板登录账号:${N} ${SUI_USER}"
+  if [[ "$SUI_PASS_GENERATED" == "1" ]]; then
+    echo -e "  ${G}▍面板登录密码(自动生成,只显示这一次,请立刻保存):${N} ${SUI_PASS}"
+  fi
   echo -e "  ${G}▍converter 管理密钥(请保存):${N} ${CONV_ADMIN_SECRET}"
   echo -e "  ${G}▍下一步:${N} 打开面板 →「会员」→ 新增会员,把订阅地址发给他即可。"
   echo -e "${C}${div}${N}"
