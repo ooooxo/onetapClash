@@ -4,7 +4,7 @@
   "final": "♻️ 自动选择",
   "modules": [
     { "id": "antileak", "name": "防泄漏(WebRTC/STUN)", "enabled": true, "policy": "REJECT", "geosite": [], "geoip": [],
-      "rules": ["DOMAIN-KEYWORD,stun,REJECT", "DOMAIN-SUFFIX,stunprotocol.org,REJECT", "DST-PORT,3478,REJECT", "DST-PORT,5349,REJECT", "DST-PORT,19302,REJECT"] },
+      "rules": ["DOMAIN-REGEX,(^|\\.)stun[0-9]*\\.,REJECT", "DOMAIN-SUFFIX,stunprotocol.org,REJECT", "DST-PORT,3478,REJECT", "DST-PORT,5349,REJECT", "DST-PORT,19302,REJECT"] },
     { "id": "lan", "name": "局域网直连", "enabled": true, "policy": "DIRECT", "geosite": ["private"], "geoip": ["private"],
       "rules": ["IP-CIDR,127.0.0.0/8,DIRECT,no-resolve", "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve", "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve", "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve", "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve"] },
     { "id": "reject", "name": "广告拦截", "enabled": true, "policy": "REJECT", "geosite": ["category-ads-all"], "geoip": [], "rules": [] },
