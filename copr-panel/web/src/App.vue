@@ -170,7 +170,7 @@ main{background:var(--bg-content);min-width:0;display:flex;flex-direction:column
   .dock button{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:3px;padding-top:4px;
                font-size:11px;font-weight:600;color:var(--ink-3);transition:color var(--t-fast)}
   .dock .di{width:44px;height:28px;border-radius:var(--r-pill);display:flex;align-items:center;justify-content:center;
-            transition:background var(--t-fast),transform var(--t-fast) var(--ease-out)}
+            transition:transform var(--t-fast) var(--ease-out)}
   /* 选中双通道:色 + 图标底 */
   .dock button.on{color:var(--accent-ink)}
   /* 高亮底是一块会滑动的 .dk-ind:切 tab 时从旧位置滑到新位置(屏内移动 → ease-in-out) */
