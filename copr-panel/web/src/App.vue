@@ -14,7 +14,7 @@ import MemberEditor from './components/MemberEditor.vue'
 import BulkAdd from './components/BulkAdd.vue'
 import MemberDrawer from './components/MemberDrawer.vue'
 import Toast from './components/Toast.vue'
-import { login } from './api/client'
+import { login, logout } from './api/client'
 function editFromDrawer(name: string) { ui.drawerName = undefined; ui.memberEditName = name }
 
 const NAV: { id: ViewId; label: string; icon: string }[] = [
@@ -40,10 +40,17 @@ async function doLogin() {
     if (res && res.success === false) { loginErr.value = res.msg || '账号或密码错误'; loggingIn.value = false; return }
     await store.load(); me.value = user.value; store.loggedIn = true
   } catch (e: any) {
+    // nginx 登录限速(每 IP 每分钟 6 次)
+    if (String(e?.message).startsWith('429')) loginErr.value = '尝试太频繁,请一分钟后再试'
     // 后端不可达(网络/域名 fake-ip/未部署)→ 明确报错,不再静默假装演示数据
-    loginErr.value = '后端不可达:确认浏览器能访问该域名(本机 Clash 是否把它 fake-ip?)、后端是否已部署'
+    else loginErr.value = '后端不可达:确认浏览器能访问该域名(本机 Clash 是否把它 fake-ip?)、后端是否已部署'
   }
   loggingIn.value = false
+}
+// 先让 s-ui 清会话再切页面,否则 cookie 仍有效、一刷新又自动登回去;接口失败也照样退出
+async function doLogout() {
+  try { await logout() } catch { /* ignore */ }
+  store.loggedIn = false; store.live = false
 }
 // 复用 s-ui 会话:若 cookie 仍有效,自动进入,免每次重登
 onMounted(async () => { try { await store.load() } catch { /* not logged in */ } if (store.live) store.loggedIn = true })
@@ -75,7 +82,7 @@ onMounted(async () => { try { await store.load() } catch { /* not logged in */ }
       </nav>
       <div class="spacer" />
       <div class="auser"><div class="av">{{ (me || '?')[0].toUpperCase() }}</div><div><div class="un">{{ me || 's-ui 用户' }}</div><div class="ur">管理员</div></div>
-        <button class="lo" aria-label="退出" @click="store.loggedIn = false"><Icon name="logout" :size="16" /></button>
+        <button class="lo" aria-label="退出" @click="doLogout"><Icon name="logout" :size="16" /></button>
       </div>
     </aside>
 

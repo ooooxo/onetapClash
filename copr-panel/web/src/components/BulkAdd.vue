@@ -20,9 +20,20 @@ const busy = ref(false)
 async function create() {
   const list = names.value.split('\n').map(s => s.trim()).filter(Boolean)
   if (!list.length) { toast('请填名称'); return }
+  // 订阅地址是 /get/<名称>:含 / 拼不成路径;重名 = 两人抢同一个订阅
+  const slash = list.find(n => n.includes('/'))
+  if (slash) { toast(`名称不能含 /:${slash}`); return }
+  const dup = list.find((n, i) => list.indexOf(n) !== i)
+  if (dup) { toast(`名称重复:${dup}`); return }
+  const taken = list.find(n => store.members.some(m => m.name === n))
+  if (taken) { toast(`会员已存在:${taken}`); return }
+  // 填错(非数字/负数)不能悄悄变成 0 —— 0 = 不限流量
+  const vol = Number(volume.value.trim())
+  if (!Number.isFinite(vol) || vol < 0) { toast('流量上限要填 ≥ 0 的数字'); return }
   if (!picked.value.length) { toast('请至少选一个节点'); return }
-  const expiryMs = expiry.value ? new Date(expiry.value + 'T00:00:00').getTime() : 0
-  const clients = list.map(n => buildClient(n, { inbounds: [...picked.value], volumeGiB: Number(volume.value) || 0, expiryMs, group: group.value }))
+  // s-ui expiry 是秒
+  const expirySec = expiry.value ? Math.floor(new Date(expiry.value + 'T00:00:00').getTime() / 1000) : 0
+  const clients = list.map(n => buildClient(n, { inbounds: [...picked.value], volumeGiB: vol, expirySec, group: group.value }))
   busy.value = true
   try {
     await apiSave('clients', 'addbulk', clients)  // s-ui 原生批量

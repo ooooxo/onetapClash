@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, reactive, onMounted, onUnmounted } from 'vue'
-import { store } from '../store'
+import { store, ymd } from '../store'
 import { loadData } from '../api/client'
 import Icon from '../components/Icon.vue'
 
@@ -41,7 +41,7 @@ async function poll() {
       store.members = clients.map((c: any) => ({
         id: c.id, name: c.name, gb: Math.round(((+c.up || 0) + (+c.down || 0)) / 1e9),
         on: (o?.onlines?.user ?? []).includes(c.name),
-        exp: c.expiry > 0 ? new Date((+c.expiry > 1e12 ? +c.expiry : +c.expiry * 1000)).toISOString().slice(0, 10) : '长期',
+        exp: c.expiry > 0 ? ymd(new Date((+c.expiry > 1e12 ? +c.expiry : +c.expiry * 1000))) : '长期',
       }))
     }
     store.onlineInbounds = o?.onlines?.inbound ?? []
@@ -58,7 +58,8 @@ async function poll() {
     prevUp = tu; prevDown = td; prevT = now
   } catch { /* keep last */ }
 }
-onMounted(() => { if (store.live) { poll(); timer = window.setInterval(poll, 3000) } })
+// s-ui 每 10s 才落一次 up/down;轮询比它快,差值就是 0/0/一次性 3 倍,峰值也被虚高 —— 跟它同频
+onMounted(() => { if (store.live) { poll(); timer = window.setInterval(poll, 10000) } })
 onUnmounted(() => clearInterval(timer))
 </script>
 
@@ -72,7 +73,7 @@ onUnmounted(() => clearInterval(timer))
   </div>
   <div class="grid g2">
     <div class="panel">
-      <div class="sect"><h3>实时吞吐</h3><div class="sp" /><span class="chip" :class="store.live ? 'on' : 'gray'">{{ store.live ? '每 3s' : '未连接' }}</span></div>
+      <div class="sect"><h3>实时吞吐</h3><div class="sp" /><span class="chip" :class="store.live ? 'on' : 'gray'">{{ store.live ? '每 10s' : '未连接' }}</span></div>
       <div class="rrow">
         <div class="rc"><span class="rl">↑ 上行</span><b class="rv">{{ fmtR(curUp) }}</b></div>
         <div class="rc"><span class="rl">↓ 下行</span><b class="rv">{{ fmtR(curDown) }}</b></div>
@@ -83,7 +84,7 @@ onUnmounted(() => clearInterval(timer))
         <path :d="areaPath" fill="url(#tg)" />
         <path :d="linePath" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
-      <div v-else class="empty">{{ store.live ? '采样中…(3s 后出曲线)' : '未连接' }}</div>
+      <div v-else class="empty">{{ store.live ? '采样中…(约 20s 后出曲线)' : '未连接' }}</div>
       <div class="nstrip">
         <span v-for="n in store.nodes" :key="n.name" class="nchip" :class="{ on: nodeActive(n) }">
           <span class="dot" :class="{ on: nodeActive(n) }" />{{ n.name }} · {{ n.net }}

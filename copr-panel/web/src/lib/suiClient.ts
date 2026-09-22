@@ -5,7 +5,7 @@ import { rb64, ruuid } from './rand'
 export interface BuildOpts {
   inbounds?: number[]      // 绑定入站 id —— 必须传 s-ui 真实 id(store.nodes[].id),没有默认值
   volumeGiB?: number       // 流量上限(GiB,0=不限)
-  expiryMs?: number        // 到期时间戳(ms,0=长期)
+  expirySec?: number       // 到期 Unix 时间戳(秒!s-ui 按秒比较,传毫秒=永不过期;0=长期)
   uuid?: string
   hy2pw?: string
   group?: string
@@ -13,10 +13,14 @@ export interface BuildOpts {
   desc?: string
   flow?: string            // VLESS flow;留空 = 不用 vision
   autoReset?: boolean
-  resetDays?: number
+  resetDays?: number       // autoReset=重置周期;仅 delayStart=有效期(首次连接起算)
   delayStart?: boolean     // 首次连接才开始算到期
   extLinks?: string[]      // 外部订阅/分享链接;s-ui 只保留 type != 'local' 的条目
 }
+
+// 外部链接分类:http(s) 是第三方订阅,s-ui 按 'sub' 拉取展开;其余(vless:// 等)是单条分享链接
+export const extLink = (uri: string) =>
+  ({ remark: 'external', type: /^https?:\/\//i.test(uri) ? 'sub' : 'external', uri })
 
 export function buildClient(name: string, o: BuildOpts = {}) {
   // 绑不到真实入站的会员 = 订阅里没有节点 = 链接不可用。宁可报错也不要造一个坏会员。
@@ -44,13 +48,14 @@ export function buildClient(name: string, o: BuildOpts = {}) {
     enable: o.enable ?? true, name, config,
     inbounds: o.inbounds,
     // s-ui 会重建 type='local' 的链接,只保留非 local 的,所以外部链接放这里不会被冲掉
-    links: (o.extLinks ?? []).filter(u => u.trim())
-      .map(uri => ({ remark: 'external', type: 'external', uri: uri.trim() })),
+    links: (o.extLinks ?? []).map(u => u.trim()).filter(Boolean).map(extLink),
     volume: Math.round((o.volumeGiB || 0) * 1073741824),
-    expiry: o.expiryMs || 0,
+    // 延迟启动且不自动重置:s-ui 在首次连接时写 expiry = now + resetDays 天,这里必须给 0
+    expiry: o.delayStart && !o.autoReset ? 0 : (o.expirySec || 0),
     up: 0, down: 0, desc: o.desc || '', group: o.group || '',
     delayStart: o.delayStart ?? false,
     autoReset: o.autoReset ?? false,
-    resetDays: o.autoReset ? (o.resetDays || 30) : 0,
+    // delayStart 也要带天数:resetDays=0 会让会员首次连接一分钟后就到期
+    resetDays: o.autoReset || o.delayStart ? (o.resetDays || 30) : 0,
   }
 }

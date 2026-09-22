@@ -60,7 +60,8 @@ const rulesPreview = computed(() => {
   out.push(`MATCH,${cfg.value.final}`)
   return out.map(r => `  - ${r}`).join('\n')
 })
-const base = () => store.subUrl('<会员名>')
+// 占位符拼在外面:subUrl 会编码名称,<会员名> 会变成一串 %XX
+const base = () => store.subUrl('') + '<会员名>'
 </script>
 
 <template>

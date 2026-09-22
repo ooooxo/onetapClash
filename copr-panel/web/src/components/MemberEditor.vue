@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import Modal from './Modal.vue'
 import Switch from './Switch.vue'
 import XDate from './XDate.vue'
 import XSelect from './XSelect.vue'
-import { store } from '../store'
+import { store, ymd } from '../store'
 import { ruuid, rb64 } from '../lib/rand'
-import { buildClient } from '../lib/suiClient'
+import { buildClient, extLink } from '../lib/suiClient'
 import { save as apiSave, getClient } from '../api/client'
 import { copyText } from '../lib/qr'
 import { toast } from '../ui'
@@ -26,6 +26,8 @@ const desc = ref('')
 const autoReset = ref(false)
 const resetDays = ref('30')
 const delayStart = ref(false)
+// 延迟启动且不自动重置:s-ui 在首次连接时写 expiry = now + 天数,到期日不由这里定
+const onlyDelay = computed(() => delayStart.value && !autoReset.value)
 // 绑定节点 = s-ui 真实入站,默认全选;没有入站时不给建(建了也是死链接)
 const picked = ref<number[]>(store.nodes.map(n => n.id))
 function togglePick(id: number) {
@@ -41,6 +43,8 @@ const ext = ref('')
 // 只有 /api/clients?id=N 会返回 config,列表接口不返回;不带 config 直接 edit
 // 会把凭证清空,已发出去的链接全部失效。
 const original = ref<any>(null)
+let vol0 = ''   // 读进来时的配额文本;没改就原样回写字节数
+let exp0 = ''   // 读进来时的到期日文本;没改就沿用原值(s-ui 自己写的到期带时分秒,按零点重写会丢最多一天)
 const loading = ref(isEdit)
 const loadErr = ref('')
 
@@ -53,14 +57,16 @@ onMounted(async () => {
     enabled.value = !!c.enable
     name.value = c.name
     group.value = c.group || ''
-    volume.value = String(Math.round((Number(c.volume) || 0) / 1073741824))
+    volume.value = String(+((Number(c.volume) || 0) / 1073741824).toFixed(2))
+    vol0 = volume.value
     desc.value = c.desc || ''
     autoReset.value = !!c.autoReset
     resetDays.value = String(c.resetDays || 30)
     delayStart.value = !!c.delayStart
     picked.value = Array.isArray(c.inbounds) ? [...c.inbounds] : []
     const e = Number(c.expiry)
-    if (e > 0) expiry.value = new Date(e > 1e12 ? e : e * 1000).toISOString().slice(0, 10)
+    if (e > 0) expiry.value = ymd(new Date(e > 1e12 ? e : e * 1000))
+    exp0 = expiry.value
     uuid.value = c.config?.vless?.uuid || uuid.value
     flow.value = c.config?.vless?.flow || '(空)'
     pw.value = c.config?.hysteria2?.password || pw.value
@@ -71,13 +77,22 @@ onMounted(async () => {
   loading.value = false
 })
 
-const sub = () => store.subUrl(name.value || '<名称>')
+const sub = () => name.value.trim() ? store.subUrl(name.value.trim()) : store.subUrl('') + '<名称>'
 const busy = ref(false)
 async function save() {
   const nm = name.value.trim()
   if (!nm) { toast('请填名称'); return }
+  // 订阅地址是 /get/<名称>:含 / 拼不成路径;重名 = 两人抢同一个订阅(编辑时没改名不算)
+  if (nm.includes('/')) { toast('名称不能含 /'); return }
+  if (nm !== props.editName && store.members.some(m => m.name === nm)) { toast(`会员「${nm}」已存在`); return }
+  // 填错(非数字/负数)不能悄悄变成 0 —— 0 = 不限流量
+  const vol = Number(volume.value.trim())
+  if (!Number.isFinite(vol) || vol < 0) { toast('流量上限要填 ≥ 0 的数字'); return }
   if (!picked.value.length) { toast('请至少选一个节点'); return }
-  const expiryMs = expiry.value ? new Date(expiry.value + 'T00:00:00').getTime() : 0
+  // s-ui expiry 是秒(按秒比较,毫秒 = 永不过期)
+  const expirySec = !onlyDelay.value && expiry.value ? Math.floor(new Date(expiry.value + 'T00:00:00').getTime() / 1000) : 0
+  // delayStart 时它是有效期,也必须 > 0:resetDays=0 会让会员首次连接一分钟后就到期
+  const days = Number(resetDays.value) || 30
   const fl = flow.value === '(空)' ? '' : flow.value
   const extLinks = ext.value.split('\n').map(s => s.trim()).filter(Boolean)
 
@@ -90,33 +105,37 @@ async function save() {
     obj.name = nm
     obj.group = group.value
     obj.desc = desc.value
-    obj.volume = Math.round((Number(volume.value) || 0) * 1073741824)
-    obj.expiry = expiryMs
+    // 显示只到 0.01 GiB,文本没动就不回写,免得非整数配额被改掉几 MB
+    if (volume.value !== vol0) obj.volume = Math.round(vol * 1073741824)
+    // 日期没动:沿用原值;旧版面板误写的毫秒顺手改成秒
+    const e0 = Number(original.value.expiry) || 0
+    obj.expiry = !onlyDelay.value && expiry.value === exp0 ? (e0 > 1e12 ? Math.floor(e0 / 1000) : e0) : expirySec
     obj.autoReset = autoReset.value
-    obj.resetDays = autoReset.value ? (Number(resetDays.value) || 30) : 0
+    obj.resetDays = autoReset.value || delayStart.value ? days : 0
     obj.delayStart = delayStart.value
     obj.inbounds = [...picked.value]
     obj.config = { ...(original.value.config || {}) }
     if (obj.config.vless) obj.config.vless = { ...obj.config.vless, uuid: uuid.value, flow: fl }
     if (obj.config.hysteria2) obj.config.hysteria2 = { ...obj.config.hysteria2, password: pw.value }
+    // 原有非 local 链接按 uri 原样保留 type/remark('sub' 被改成 'external',s-ui 就不再展开那个订阅)
+    const oldExt = (original.value.links || []).filter((l: any) => l.type !== 'local')
     obj.links = [
       ...(original.value.links || []).filter((l: any) => l.type === 'local'),
-      ...extLinks.map(uri => ({ remark: 'external', type: 'external', uri })),
+      ...extLinks.map(uri => oldExt.find((l: any) => l.uri === uri) ?? extLink(uri)),
     ]
   } else {
     obj = buildClient(nm, {
-      inbounds: [...picked.value], volumeGiB: Number(volume.value) || 0, expiryMs,
+      inbounds: [...picked.value], volumeGiB: vol, expirySec,
       uuid: uuid.value, hy2pw: pw.value, group: group.value,
       enable: enabled.value, desc: desc.value, flow: fl,
-      autoReset: autoReset.value, resetDays: Number(resetDays.value) || 30,
+      autoReset: autoReset.value, resetDays: days,
       delayStart: delayStart.value, extLinks,
     })
   }
 
   busy.value = true
   try {
-    const r: any = await apiSave('clients', isEdit ? 'edit' : 'new', obj)
-    if (r && r.success === false) throw new Error(r.msg || '保存失败')
+    await apiSave('clients', isEdit ? 'edit' : 'new', obj)
     await store.load()
     toast((isEdit ? '已保存 ' : '会员已创建 ') + nm)
     emit('close')
@@ -141,11 +160,11 @@ async function save() {
       <div v-if="tab === 'basic'">
         <div class="swrow"><div class="tx"><b>启用</b><span>停用后保留配置但连不上</span></div><Switch v-model="enabled" /></div>
         <div class="frow"><div class="fld"><label>名称</label><input v-model="name" placeholder="例如 alice" /></div><div class="fld"><label>分组</label><input v-model="group" /></div></div>
-        <div class="frow"><div class="fld"><label>流量上限 (GiB · 0 不限)</label><input v-model="volume" /></div><div class="fld"><label>到期</label><XDate v-model="expiry" /></div></div>
+        <div class="frow"><div class="fld"><label>流量上限 (GiB · 0 不限)</label><input v-model="volume" /></div><div class="fld"><label>到期</label><XDate v-if="!onlyDelay" v-model="expiry" /><div v-else class="fnote">由下方「有效期」决定,首次连接起算</div></div></div>
         <div class="fld"><label>描述</label><input v-model="desc" placeholder="可选备注" /></div>
         <div class="swrow"><div class="tx"><b>自动重置流量</b><span>每 N 天清零计数</span></div><Switch v-model="autoReset" /></div>
-        <div v-if="autoReset" class="fld"><label>重置周期(天)</label><input v-model="resetDays" /></div>
         <div class="swrow"><div class="tx"><b>延迟启动</b><span>首次连接才开始计时到期</span></div><Switch v-model="delayStart" /></div>
+        <div v-if="autoReset || delayStart" class="fld"><label>{{ autoReset ? '重置周期(天)' : '有效期(天,首次连接起算)' }}</label><input v-model="resetDays" /></div>
         <label class="lb" style="display:block;margin:14px 0 8px">绑定节点</label>
         <div v-if="store.nodes.length" class="frow">
           <label v-for="n in store.nodes" :key="n.id" class="chk">

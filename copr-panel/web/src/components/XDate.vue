@@ -3,7 +3,7 @@ import { ref } from 'vue'
 const props = defineProps<{ modelValue: string }>()
 const emit = defineEmits<{ (e: 'update:modelValue', v: string): void }>()
 const open = ref(false)
-const view = ref(props.modelValue ? new Date(props.modelValue + 'T00:00:00') : new Date(2026, 6, 17))
+const view = ref(props.modelValue ? new Date(props.modelValue + 'T00:00:00') : new Date())
 
 const WD = ['日', '一', '二', '三', '四', '五', '六']
 function cells() {

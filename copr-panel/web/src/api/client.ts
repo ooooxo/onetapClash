@@ -1,17 +1,29 @@
-// s-ui REST API client。经 nginx 同源反代:VITE_API_BASE 默认 /panel/api → 127.0.0.1:2020/app/api
-// converter(分流)API 走 /panel/conv → 127.0.0.1:25501
-const API = import.meta.env.VITE_API_BASE || '/panel/api'
-const CONV = import.meta.env.VITE_CONV_BASE || '/panel/conv'
+// s-ui REST API client。经 nginx 同源反代:VITE_API_BASE 默认 <base>api → 127.0.0.1:2020/app/api
+// converter(分流)API 走 <base>conv → 127.0.0.1:25501
+// <base> 跟随构建时的 --base(部署在 /panel/),换路径部署不用改代码
+const API = import.meta.env.VITE_API_BASE || import.meta.env.BASE_URL + 'api'
+const CONV = import.meta.env.VITE_CONV_BASE || import.meta.env.BASE_URL + 'conv'
+
+// 会话失效回调,由 store 注册(client 不 import store,避免循环依赖)
+export const hooks = { unauthorized: () => {} }
 
 async function req(base: string, path: string, opts: RequestInit = {}) {
   const r = await fetch(`${base}${path}`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(opts.headers || {}) },
     ...opts,
+    // headers 必须放在 ...opts 之后,否则 opts.headers 会把合并好的整块替换掉
+    // X-Requested-With:会话过期时 s-ui 回 JSON {success:false,msg:'Invalid login'},
+    // 不带则 307 到 /login,nginx 回 200 "OK" 文本,前端分不清
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest', ...(opts.headers || {}) },
   })
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
   const ct = r.headers.get('content-type') || ''
-  return ct.includes('json') ? r.json() : r.text()
+  const data = ct.includes('json') ? await r.json() : await r.text()
+  if (r.redirected || (data?.success === false && data?.msg === 'Invalid login')) {
+    hooks.unauthorized()
+    throw new Error('登录已过期,请重新登录')
+  }
+  return data
 }
 
 const form = (o: Record<string, string>) =>
@@ -20,6 +32,9 @@ const form = (o: Record<string, string>) =>
 // ---- s-ui cookie-session API ----
 export const login = (user: string, pass: string) =>
   req(API, '/login', { method: 'POST', body: form({ user, pass }) })
+
+// 退出要让 s-ui 清掉会话,否则 cookie 仍有效,刷新页面又自动登回去
+export const logout = () => req(API, '/logout')
 
 // s-ui 全量数据在 /load(不是 getData —— 那是内部函数)。返回 {success,msg,obj:{clients,inbounds,onlines,...}}
 export const loadData = () => req(API, '/load?lu=0')
@@ -50,10 +65,13 @@ export const realityKeypair = async (): Promise<{ priv: string; pub: string }> =
 // 试着按 JSONB 解析:`[1, 2]`(带空格,6 字节)恰好符合 JSONB 头部长度,于是被当成 JSONB 解出
 // 乱码 → "malformed JSON",整个保存失败;`[1,2]`(5 字节)长度对不上,退回文本解析才正常。
 // 这就是「会员绑多个节点必失败」的根因 —— 别在这里做美化输出。
-export const save = (object: string, action: string, data: unknown, initUsers?: string) => {
+export const save = async (object: string, action: string, data: unknown, initUsers?: string) => {
   const body: Record<string, string> = { object, action, data: JSON.stringify(data) }
   if (initUsers) body.initUsers = initUsers
-  return req(API, '/save', { method: 'POST', body: form(body) })
+  const r: any = await req(API, '/save', { method: 'POST', body: form(body) })
+  // s-ui 保存失败也回 HTTP 200 + {success:false,msg},不在这里拦住,调用方就会把失败当成功提示
+  if (r?.success !== true) throw new Error(r?.msg || '保存失败')
+  return r
 }
 
 // ---- converter(分流规则)----

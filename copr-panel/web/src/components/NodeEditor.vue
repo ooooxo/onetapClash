@@ -36,7 +36,6 @@ function pick(k: Kind) {
 // save 返回 {obj:{tls:[...]}} —— 从里面取回新建的 tls id
 async function createTls(name: string, server: any, client: any): Promise<number> {
   const r: any = await apiSave('tls', 'new', { id: 0, name, server, client })
-  if (r?.success !== true) throw new Error(r?.msg || '创建 TLS 失败')
   const list: any[] = r?.obj?.tls ?? []
   const hit = list.find(t => t.name === name)
   if (!hit) throw new Error('创建了 TLS 但拿不到 id')
@@ -76,8 +75,8 @@ async function create() {
         : { id: 0, type: 'tuic', tag: t, listen: '::', listen_port: p, tls_id: tlsId,
             congestion_control: 'bbr', addrs: [{ server: domain.value, server_port: p }], out_json: {} }
     }
-    const r: any = await apiSave('inbounds', 'new', inbound)
-    if (r?.success !== true) throw new Error(r?.msg || '创建入站失败')
+    // initUsers:现有会员一并绑上新节点(s-ui 同时改这些会员的 inbounds),否则新节点不进任何人的订阅
+    await apiSave('inbounds', 'new', inbound, store.members.map(m => m.id).filter(Boolean).join(','))
     await store.load()
     toast(`节点已开设:${t} :${p}`)
     emit('close')

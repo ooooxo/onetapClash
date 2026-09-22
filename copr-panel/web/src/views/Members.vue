@@ -13,7 +13,7 @@ const mx = computed(() => Math.max(1, ...store.members.map(m => m.gb)))
       <button class="pri" @click="ui.memberEditName = ''"><Icon name="add" :size="15" />新增会员</button>
     </div>
     <div v-if="!store.members.length" style="padding:20px 0;text-align:center;font-size:12px;color:var(--ink-4)">
-      还没有会员 —— 点右上「新增会员」建一个,订阅地址就是 {{ store.subUrl('<名称>') }}
+      还没有会员 —— 点右上「新增会员」建一个,订阅地址就是 {{ store.subUrl('') }}&lt;名称&gt;
     </div>
     <div v-for="m in store.members" :key="m.name" class="row tap" :class="{ top: m.gb === mx && m.gb > 0 }" @click="ui.drawerName = m.name">
       <span class="dot" :class="{ on: m.on }" />

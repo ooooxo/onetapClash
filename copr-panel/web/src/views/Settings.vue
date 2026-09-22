@@ -18,17 +18,18 @@ onMounted(async () => {
   try { await convRules(); convOk.value = true } catch { convOk.value = false }
 })
 const isHttps = location.protocol === 'https:'
+const base = import.meta.env.BASE_URL  // 构建时的 --base,不写死 /panel/
 const v = (k: string, d = '—') => (s.value && s.value[k] !== undefined && s.value[k] !== '' ? String(s.value[k]) : d)
 </script>
 <template>
   <div class="grid g2">
     <div class="panel">
       <div class="sect"><h3>面板与订阅</h3><div class="sp" /><span class="chip" :class="s ? 'on' : 'gray'">{{ s ? '实时' : (sErr ? '读取失败' : '读取中…') }}</span></div>
-      <div class="kv"><span>Vue 面板</span><b>{{ store.domain }}/panel/</b></div>
+      <div class="kv"><span>Vue 面板</span><b>{{ store.domain }}{{ base }}</b></div>
       <div class="kv"><span>s-ui 原面板</span><b>{{ store.suiUrl() }}</b></div>
       <div class="kv"><span>面板端口 / 路径</span><b>{{ v('webPort') }} · {{ v('webPath') }}</b></div>
       <div class="kv"><span>订阅端口 / 路径</span><b>{{ v('subPort') }} · {{ v('subPath') }}</b></div>
-      <div class="kv"><span>对外订阅</span><b>{{ store.subUrl('<会员名>') }}</b></div>
+      <div class="kv"><span>对外订阅</span><b>{{ store.subUrl('') }}&lt;会员名&gt;</b></div>
       <div class="kv"><span>时区</span><b>{{ v('timeLocation') }}</b></div>
       <div v-if="sErr" class="kv"><span>错误</span><b style="color:var(--crit)">{{ sErr }}</b></div>
     </div>
