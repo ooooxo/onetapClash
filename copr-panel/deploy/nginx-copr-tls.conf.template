@@ -1,4 +1,7 @@
-# TLS 版(bootstrap.sh 在 TLS_CERT 存在时用)。443 归 sing-box,HTTPS 走 ${TLS_PORT}。
+# TLS 版(bootstrap.sh 在 TLS_CERT 存在时用)。HTTPS 走 ${TLS_PORT}(默认 443/tcp;hy2 占的是 443/udp,不冲突)。
+# 登录限速:面板/原生面板的登录接口对公网开放,fail2ban 只管 SSH;每 IP 每分钟 6 次,超了回 429
+limit_req_zone $binary_remote_addr zone=copr_login:1m rate=6r/m;
+limit_req_status 429;
 # :80 —— 订阅(http,地址不变)+ ACME 续期 + 面板强制跳 https
 server {
     listen 80;
@@ -16,10 +19,11 @@ server {
     location /admin/ { allow 127.0.0.1; deny all; proxy_pass http://${CONV_ADDR}; proxy_set_header X-Admin-Secret $http_x_admin_secret; }
     location / { return 200 "OK"; add_header Content-Type text/plain; }
 }
-# :${TLS_PORT} —— HTTPS 面板 + 加密订阅
+# :${TLS_PORT} —— HTTPS 面板 + 加密订阅(TLS_PORT_LEGACY 非空时同一站点再多听一个旧端口)
 server {
     listen ${TLS_PORT} ssl http2;
     listen [::]:${TLS_PORT} ssl http2;
+    ${TLS_LEGACY_LISTEN}
     server_name ${DOMAIN};
     ssl_certificate ${TLS_CERT};
     ssl_certificate_key ${TLS_KEY};
@@ -35,9 +39,26 @@ server {
         proxy_cookie_path ${SUI_BASE} ${PANEL_PATH};
         proxy_cookie_path / ${PANEL_PATH};
     }
+    location = ${PANEL_PATH}api/login {
+        limit_req zone=copr_login burst=5 nodelay;
+        proxy_pass http://${SUI_ADDR}${SUI_BASE}api/login;
+        proxy_set_header Host ${DOMAIN};
+        proxy_cookie_path ${SUI_BASE} ${PANEL_PATH};
+        proxy_cookie_path / ${PANEL_PATH};
+    }
+    location = ${SUI_BASE}api/login {
+        limit_req zone=copr_login burst=5 nodelay;
+        proxy_pass http://${SUI_ADDR}${SUI_BASE}api/login;
+        proxy_set_header Host ${DOMAIN};
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    # 会话校验:只带 Cookie,客户端其他请求头一律不转发。
+    # 否则带 X-Requested-With: XMLHttpRequest 时 s-ui 对未登录回 200 {success:false}
+    # (不带才是 307)→ auth_request 视 2xx 为放行 → 未登录也能调 converter 管理接口。
     location = ${PANEL_PATH}_authcheck {
         internal;
         proxy_pass http://${SUI_ADDR}${SUI_BASE}api/onlines;
+        proxy_pass_request_headers off;
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
         proxy_set_header Host ${DOMAIN};

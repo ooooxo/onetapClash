@@ -4,11 +4,19 @@
 #   干什么: 经 s-ui API 建 TLS 记录 + 入站(Hysteria2 / VLESS-Reality),并放行防火墙端口
 #   怎么跑: sudo bash ensure-nodes.sh          (读同目录 config.env)
 #   需要什么: s-ui 已在跑、管理员账号密码、域名证书(hy2 用)
-#   已存在同名 tag 就跳过,可以反复跑。
+#   已存在同名 tag 不重建;但已有的 hy2 节点会被校正(TLS 换 LE 证书、obfs/拥塞控制对齐配置),
+#   不走订阅、手工导入分享链接的客户端需要重新导入。可以反复跑。
+#   单独跑时需要 SUI_PASS(环境变量传入,别写进 config.env):SUI_PASS=xxx sudo -E bash ensure-nodes.sh
 # 参数集中在这里:
 # =============================================================================
+set -euo pipefail
+cd "$(dirname "$0")"
+. ./_common.sh
+# 必须先读 config.env 再写默认值:load_config_env 不覆盖已有值,
+# 反过来的话默认值先占位,单独跑脚本时 config.env 整个被无视。
+load_config_env config.env
 DOMAIN="${DOMAIN:-}"
-SUI_ADDR="${SUI_ADDR:-127.0.0.1:2095}"       # s-ui 面板本机地址
+SUI_ADDR="${SUI_ADDR:-127.0.0.1:${SUI_PORT:-2095}}"   # s-ui 面板本机地址
 SUI_BASE="${SUI_BASE:-/app/}"                # s-ui 面板路径
 SUI_USER="${SUI_USER:-}"
 SUI_PASS="${SUI_PASS:-}"
@@ -25,16 +33,16 @@ HY2_OBFS_PASSWORD="${HY2_OBFS_PASSWORD:-}"   # 留空=沿用节点上已有的;�
 HY2_UP_MBPS="${HY2_UP_MBPS:-}"           # 两个都填 = 启用 Brutal 固定速率
 HY2_DOWN_MBPS="${HY2_DOWN_MBPS:-}"
 
-set -euo pipefail
-cd "$(dirname "$0")"
-. ./_common.sh
-load_config_env config.env
 DOMAIN="${DOMAIN:?需要 DOMAIN}"
 TLS_CERT="${TLS_CERT:-/etc/letsencrypt/live/${DOMAIN}/fullchain.pem}"
 TLS_KEY="${TLS_KEY:-/etc/letsencrypt/live/${DOMAIN}/privkey.pem}"
 [[ -n "$SUI_USER" && -n "$SUI_PASS" ]] || { echo "需要 SUI_USER / SUI_PASS(config.env 里填)"; exit 1; }
 [[ -f "$TLS_CERT" && -f "$TLS_KEY" ]] || { echo "证书不存在: $TLS_CERT / $TLS_KEY —— 先申好证书再跑"; exit 1; }
 
+# 登录 cookie = 管理员会话,不能放在全局可读的固定 /tmp 路径;脚本中途失败也要清掉
+umask 077
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+export WORK
 export DOMAIN SUI_ADDR SUI_BASE SUI_USER SUI_PASS HY2_TAG HY2_PORT \
        REALITY_TAG REALITY_PORT REALITY_DEST TLS_CERT TLS_KEY WANT_REALITY \
        HY2_OBFS HY2_OBFS_PASSWORD HY2_UP_MBPS HY2_DOWN_MBPS
@@ -44,7 +52,7 @@ import json, os, subprocess, secrets, sys, urllib.parse
 
 E = os.environ
 BASE = f"http://{E['SUI_ADDR']}{E['SUI_BASE'].rstrip('/')}"
-JAR  = "/tmp/.ensure-nodes.cookie"
+JAR  = f"{E['WORK']}/cookie"
 HOST = E["DOMAIN"]          # s-ui 设了面板域名时,Host 对不上会 403
 
 def curl(args):
@@ -118,12 +126,20 @@ def hy2_tuning(existing_opts=None):
         out["obfs"] = {"type": "salamander", "password": pw}
     return out
 
+def le_tls():
+    return ensure_tls(f"{E['DOMAIN']}-le", {
+        "enabled": True, "server_name": E["DOMAIN"], "alpn": ["h3"],
+        "certificate_path": E["TLS_CERT"], "key_path": E["TLS_KEY"],
+    }, {"enabled": True, "server_name": E["DOMAIN"], "insecure": False, "alpn": ["h3"]})
+
 def reconcile_hy2():
-    """节点已存在时,把 obfs / 拥塞控制校正到期望值 —— 只改这几项,其余原样保留。"""
+    """节点已存在时,把 TLS / obfs / 拥塞控制校正到期望值 —— 只改这几项,其余原样保留。
+    TLS:老部署的 hy2 常是自签证书 + 冒充别人的 SNI + 客户端 insecure,这是明显的特征;
+    统一换成本域名的 LE 证书(s-ui 会按新 TLS 重建 out_json,分享链接随之更新)。"""
     cur = existing.get(E["HY2_TAG"])
     if not cur:
         return
-    want = hy2_tuning(cur)
+    want = {"tls_id": le_tls(), **hy2_tuning(cur)}
     drift = {k: v for k, v in want.items() if cur.get(k) != v}
     if not OBFS_ON and "obfs" in cur:
         drift["obfs"] = None
@@ -142,12 +158,8 @@ def reconcile_hy2():
     print(f"[OK] 入站 {E['HY2_TAG']} 已校正:{', '.join(drift)}")
 
 def hy2():
-    tls_id = ensure_tls(f"{E['DOMAIN']}-le", {
-        "enabled": True, "server_name": E["DOMAIN"], "alpn": ["h3"],
-        "certificate_path": E["TLS_CERT"], "key_path": E["TLS_KEY"],
-    }, {"enabled": True, "server_name": E["DOMAIN"], "insecure": False, "alpn": ["h3"]})
     return {"id": 0, "type": "hysteria2", "tag": E["HY2_TAG"], "listen": "::",
-            "listen_port": int(E["HY2_PORT"]), "tls_id": tls_id,
+            "listen_port": int(E["HY2_PORT"]), "tls_id": le_tls(),
             "addrs": [{"server": E["DOMAIN"], "server_port": int(E["HY2_PORT"])}],
             "out_json": {}, **hy2_tuning()}
 
@@ -180,25 +192,24 @@ if E["WANT_REALITY"].lower() not in ("no", "0", "false"):
     ensure_inbound(E["REALITY_TAG"], reality)
     opened.append((E["REALITY_PORT"], "tcp"))
 
-with open("/tmp/.ensure-nodes.ports", "w") as f:
+with open(f"{E['WORK']}/ports", "w") as f:
     f.write("\n".join(f"{p}/{proto}" for p, proto in opened))
 PY
 
 # ── 防火墙放行节点端口 ───────────────────────────────────────────────────────
-if command -v ufw >/dev/null && [[ -f /tmp/.ensure-nodes.ports ]]; then
+if command -v ufw >/dev/null && [[ -f "$WORK/ports" ]]; then
   # `|| [[ -n "$rule" ]]`:文件最后一行没有换行符时 read 返回非 0,少了这句会漏掉最后一条规则
   # ——曾因此漏放 Reality 的 TCP 端口,节点在防火墙后连不上。
   while read -r rule || [[ -n "$rule" ]]; do
     [[ -n "$rule" ]] && ufw allow "$rule" >/dev/null 2>&1 && echo "[OK] ufw 放行 $rule"
-  done < /tmp/.ensure-nodes.ports
+  done < "$WORK/ports"
 fi
-rm -f /tmp/.ensure-nodes.ports /tmp/.ensure-nodes.cookie
 
 # ── 自检:端口真的在监听才算成功 ─────────────────────────────────────────────
 sleep 2
-ss -lun | grep -q ":${HY2_PORT}\b" && echo "[OK] Hysteria2 监听 UDP ${HY2_PORT}" \
+ss -lun | grep ":${HY2_PORT}\b" >/dev/null && echo "[OK] Hysteria2 监听 UDP ${HY2_PORT}" \
   || echo "[!] UDP ${HY2_PORT} 没监听,看 journalctl -u s-ui"
 if [[ "$(printf '%s' "$WANT_REALITY" | tr 'A-Z' 'a-z')" != "no" ]]; then
-  ss -lnt | grep -q ":${REALITY_PORT}\b" && echo "[OK] Reality 监听 TCP ${REALITY_PORT}" \
+  ss -lnt | grep ":${REALITY_PORT}\b" >/dev/null && echo "[OK] Reality 监听 TCP ${REALITY_PORT}" \
     || echo "[!] TCP ${REALITY_PORT} 没监听,看 journalctl -u s-ui"
 fi

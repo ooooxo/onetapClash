@@ -7,14 +7,17 @@
 #   怎么跑: sudo bash ensure-services.sh
 # 参数:
 # =============================================================================
-CONV_ADDR="${CONV_ADDR:-127.0.0.1:25501}"
-SUI_ADDR="${SUI_ADDR:-127.0.0.1:2095}"
-SERVICES="${SERVICES:-s-ui sui-converter nginx fail2ban}"
-
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./_common.sh
+# 必须先读 config.env 再写默认值:load_config_env 不覆盖已有值,
+# 反过来的话默认值先占位,单独跑脚本时 config.env 整个被无视。
 load_config_env config.env
+CONV_ADDR="${CONV_ADDR:-127.0.0.1:25501}"
+SUI_ADDR="${SUI_ADDR:-127.0.0.1:${SUI_PORT:-2095}}"
+SERVICES="${SERVICES:-s-ui sui-converter nginx fail2ban}"
+SWAP_MB="${SWAP_MB:-1024}"                  # 没有 swap 时建的 swapfile 大小;0 = 不建
+
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || { echo "需要 root"; exit 1; }
 ok(){ echo -e "\033[32m[OK]\033[0m $*"; }
 
@@ -56,12 +59,28 @@ net.core.rmem_max = 33554432
 net.core.wmem_max = 33554432
 net.core.rmem_default = 1048576
 net.core.wmem_default = 1048576
+vm.swappiness = 10
 EOF
 sysctl --system >/dev/null 2>&1 || true
 # 当前网卡立即切 fq,不等重启
 IFACE="$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'dev \K\S+' || true)"
 [[ -n "$IFACE" ]] && tc qdisc replace dev "$IFACE" root fq 2>/dev/null || true
 ok "网络调优:qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null) cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+
+# ── 3.5) swap:1G 内存的小机没有 swap,s-ui(内嵌 sing-box)内存一冲高就被 OOM 杀,
+#    全部节点跟着断(实际发生过)。有 swap 就不动。
+#    swap 是优化不是必需:LXC/OpenVZ 不许 swapon,不能因此让后面的看门狗装不上。
+if [[ -z "$(swapon --noheadings)" && "$SWAP_MB" -gt 0 ]]; then
+  [[ -f /swapfile ]] || { fallocate -l "${SWAP_MB}M" /swapfile; chmod 600 /swapfile; }
+  # 上次中断在 fallocate 之后会留下没格式化的文件,每次都 swapon 失败 → 补 mkswap
+  blkid -t TYPE=swap /swapfile >/dev/null 2>&1 || mkswap /swapfile >/dev/null
+  if swapon /swapfile; then
+    grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  else
+    echo "[!] swapon 失败(容器虚拟化不支持?),跳过 swap"
+  fi
+fi
+ok "swap:$(free -m | awk '/^Swap:/{print $2}')MB"
 
 # ── 4) 健康看门狗:端口没监听 = 服务其实是死的,systemd 看不出来 ──────────────
 cat > /usr/local/bin/onetap-healthcheck <<EOF

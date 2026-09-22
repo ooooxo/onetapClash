@@ -40,6 +40,7 @@ CONV_DIR="${CONV_DIR:-/opt/sui-converter}"
 CONV_ADDR="${CONV_ADDR:-127.0.0.1:25501}"
 CERT_MODE="${CERT_MODE:-le}"
 DOMAIN="${DOMAIN:-}"; TLS_CERT="${TLS_CERT:-}"; TLS_KEY="${TLS_KEY:-}"; TLS_PORT="${TLS_PORT:-443}"
+TLS_PORT_LEGACY="${TLS_PORT_LEGACY:-}"   # 旧 HTTPS 端口:填了 nginx 就额外监听它,老订阅地址不断;默认空
 CONV_ADMIN_SECRET="${CONV_ADMIN_SECRET:-}"
 PANEL="${PANEL:-yes}"
 PANEL_DIR="${PANEL_DIR:-/opt/copr-panel/web}"
@@ -65,8 +66,10 @@ HY2_UP_MBPS="${HY2_UP_MBPS:-}"
 HY2_DOWN_MBPS="${HY2_DOWN_MBPS:-}"
 HY2_OBFS="${HY2_OBFS:-yes}"        # salamander 混淆,默认开
 HY2_OBFS_PASSWORD="${HY2_OBFS_PASSWORD:-}"
-HARDEN="${HARDEN:-yes}"            # fail2ban + ufw + sshd 公钥登录
+IPV6="${IPV6:-no}"                 # 服务器有公网 IPv6 且域名有 AAAA → yes(订阅里打开客户端 IPv6 + 端口跳跃补 v6 规则)
+HARDEN="${HARDEN:-yes}"            # fail2ban + ufw + sshd 公钥登录 + 自动安全更新
 SSH_PORT="${SSH_PORT:-22}"
+DISABLE_PASSWORD_AUTH="${DISABLE_PASSWORD_AUTH:-no}"  # yes=关 SSH 密码登录(authorized_keys 为空时 harden.sh 会拒绝)
 
 _ask(){  # _ask VAR "提示" "默认" [secret];已有值不问;无 TTY 用默认
   local var="$1" msg="$2" def="${3:-}" secret="${4:-}" input
@@ -113,6 +116,11 @@ _prompt_config(){
   fi
   TLS_CERT="${TLS_CERT:-/etc/letsencrypt/live/${DOMAIN}/fullchain.pem}"
   TLS_KEY="${TLS_KEY:-/etc/letsencrypt/live/${DOMAIN}/privkey.pem}"
+  # 留空时沿用已部署 converter 的密钥;每次都新生成的话,只重建 nginx 的模式(--panel-only)
+  # 会让 nginx 注入的密钥和 converter 里的对不上 → 面板分流/会员映射全部 401
+  if [[ -z "$CONV_ADMIN_SECRET" && -f /etc/systemd/system/sui-converter.service ]]; then
+    CONV_ADMIN_SECRET="$(sed -n 's/^Environment=ADMIN_SECRET=//p' /etc/systemd/system/sui-converter.service)"
+  fi
   [[ -n "$CONV_ADMIN_SECRET" ]] || CONV_ADMIN_SECRET="$(openssl rand -hex 24)"
 }
 
@@ -122,8 +130,8 @@ _deps(){
   log "安装依赖..."
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq >/dev/null 2>&1 || true
-  apt-get install -y -qq curl wget jq unzip nginx certbot gettext-base \
-    python3 python3-venv python3-pip sqlite3 ufw fail2ban >/dev/null 2>&1 || true
+  apt-get install -y -qq -o DPkg::Lock::Timeout=300 curl wget unzip nginx certbot gettext-base \
+    python3 python3-venv python3-pip sqlite3 ufw fail2ban >/dev/null
   ok "依赖就绪"
 }
 
@@ -143,10 +151,12 @@ server { listen 80; listen [::]:80; server_name ${DOMAIN};
   location ^~ /.well-known/acme-challenge/ { root /var/www/certbot; } location / { return 404; } }
 EOF
   ln -sf /etc/nginx/sites-available/acme-bootstrap /etc/nginx/sites-enabled/acme-bootstrap
-  # 旧站点必须先摘掉:它引用的证书此刻可能不存在(首次签发/证书被删),
-  # 留着会让 nginx -t 失败 → nginx 起不来 → webroot 验证拿不到 token → 签发失败。
-  # _nginx 紧接着会重新生成并启用,不会丢配置。
-  rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/copr.conf /etc/nginx/sites-enabled/copr-sub.conf
+  # 证书缺失时旧站点必须先摘掉:它引用的证书不存在会让 nginx -t 失败 → nginx 起不来 →
+  # webroot 验证拿不到 token → 签发失败。_nginx 随后会重新生成并启用。
+  # 证书还在就别摘:现有站点照常服务(它也带 acme-challenge),重跑期间面板/订阅不断。
+  rm -f /etc/nginx/sites-enabled/default
+  [[ -f "$TLS_CERT" && -f "$TLS_KEY" ]] \
+    || rm -f /etc/nginx/sites-enabled/copr.conf /etc/nginx/sites-enabled/copr-sub.conf
   nginx -t >/dev/null 2>&1 && { systemctl reload nginx 2>/dev/null || systemctl restart nginx; } || systemctl restart nginx || true
   log "申请/续期 Let's Encrypt 证书..."
   certbot certonly --webroot -w /var/www/certbot -d "$DOMAIN" \
@@ -181,10 +191,12 @@ Environment=ADMIN_SECRET=${CONV_ADMIN_SECRET}
 Environment=USERS_FILE=${CONV_DIR}/users.json
 Environment=RULES_FILE=${CONV_DIR}/rules.json
 Environment=SUI_SUB_BASE=${SUI_SUB_BASE}
+Environment=HY2_PORT=${HY2_PORT}
 Environment=HY2_HOP_PORTS=${HOP_PORTS_EFF}
 Environment=HY2_HOP_INTERVAL=${HY2_HOP_INTERVAL}
 Environment=HY2_UP_MBPS=${HY2_UP_MBPS}
 Environment=HY2_DOWN_MBPS=${HY2_DOWN_MBPS}
+Environment=CLIENT_IPV6=${IPV6}
 ExecStart=${CONV_DIR}/venv/bin/python ${CONV_DIR}/converter.py
 Restart=always
 RestartSec=3
@@ -212,13 +224,20 @@ _panel(){
 
 _nginx(){
   log "配置 nginx..."
+  # 先备份现有站点:新配置 nginx -t 不过就原样放回,不能把坏配置留在 sites-enabled
+  # (当下 nginx 还跑着旧配置看不出问题,下次重启/开机直接起不来)
+  mkdir -p "$BK/nginx-sites" "$BK/nginx-enabled"
+  cp -a /etc/nginx/sites-available/. "$BK/nginx-sites/"
+  cp -a /etc/nginx/sites-enabled/.   "$BK/nginx-enabled/"
   rm -f /etc/nginx/sites-enabled/acme-bootstrap /etc/nginx/sites-enabled/default
   mkdir -p /var/www/certbot
   local have_tls=0; [[ -f "$TLS_CERT" && -f "$TLS_KEY" ]] && have_tls=1
   if [[ "$(lc "$PANEL")" != "no" && -f "$PANEL_DIR/index.html" && $have_tls == 1 ]]; then
     [[ -f nginx-copr-tls.conf.template ]] || die "缺 nginx-copr-tls.conf.template"
-    export DOMAIN PANEL_PATH PANEL_DIR SUI_ADDR SUI_BASE CONV_ADDR CONV_ADMIN_SECRET TLS_PORT TLS_CERT TLS_KEY
-    envsubst '$DOMAIN $PANEL_PATH $PANEL_DIR $SUI_ADDR $SUI_BASE $CONV_ADDR $CONV_ADMIN_SECRET $TLS_PORT $TLS_CERT $TLS_KEY' \
+    TLS_LEGACY_LISTEN=""
+    [[ -n "$TLS_PORT_LEGACY" ]] && TLS_LEGACY_LISTEN="listen ${TLS_PORT_LEGACY} ssl http2; listen [::]:${TLS_PORT_LEGACY} ssl http2;"
+    export DOMAIN PANEL_PATH PANEL_DIR SUI_ADDR SUI_BASE CONV_ADDR CONV_ADMIN_SECRET TLS_PORT TLS_CERT TLS_KEY TLS_LEGACY_LISTEN
+    envsubst '$DOMAIN $PANEL_PATH $PANEL_DIR $SUI_ADDR $SUI_BASE $CONV_ADDR $CONV_ADMIN_SECRET $TLS_PORT $TLS_CERT $TLS_KEY $TLS_LEGACY_LISTEN' \
       < nginx-copr-tls.conf.template > /etc/nginx/sites-available/copr.conf
     rm -f /etc/nginx/sites-enabled/copr-sub.conf
     ln -sf /etc/nginx/sites-available/copr.conf /etc/nginx/sites-enabled/copr.conf
@@ -236,12 +255,20 @@ server {
 EOF
     ln -sf /etc/nginx/sites-available/copr-sub.conf /etc/nginx/sites-enabled/copr-sub.conf
   fi
-  nginx -t && { systemctl enable nginx >/dev/null 2>&1; systemctl restart nginx; ok "nginx 就绪"; } || die "nginx 校验失败"
+  if ! nginx -t; then
+    cp -a "$BK/nginx-sites/." /etc/nginx/sites-available/
+    rm -f /etc/nginx/sites-enabled/*; cp -a "$BK/nginx-enabled/." /etc/nginx/sites-enabled/
+    die "nginx 校验失败,已恢复原配置(备份在 $BK)"
+  fi
+  systemctl enable nginx >/dev/null 2>&1
+  # reload 不断连;nginx 没在跑(首次安装)时 reload 会失败,再 restart
+  systemctl reload nginx 2>/dev/null || systemctl restart nginx
+  ok "nginx 就绪"
 }
 
 # ── 端口跳跃:抗运营商对固定 UDP 端口的 QoS ──────────────────────────────────
 _hopping(){
-  HY2_PORT="$HY2_PORT" HY2_HOP_PORTS="$HY2_HOP_PORTS" HOP_ENABLE="$HOP_ENABLE" \
+  HY2_PORT="$HY2_PORT" HY2_HOP_PORTS="$HY2_HOP_PORTS" HOP_ENABLE="$HOP_ENABLE" IPV6="$IPV6" \
     bash ensure-hopping.sh || warn "端口跳跃配置失败"
 }
 
@@ -256,32 +283,17 @@ _nodes(){
     bash ensure-nodes.sh || warn "自动开节点失败,可稍后单独重跑 ensure-nodes.sh"
 }
 
-# ── 回填 converter 用户映射(有会员时)──────────────────────────────────────
-_seed_users(){
-  local db=/usr/local/s-ui/db/s-ui.db users_json="$CONV_DIR/users.json"
-  [[ -f "$db" ]] || return
-  [[ -f "$users_json" ]] && cp "$users_json" "$BK/users.json.pre"
-  local map
-  map="$(sqlite3 "$db" "select name from clients where enable=1;" 2>/dev/null \
-    | jq -R -s --arg base "${SUI_SUB_BASE%/}/" '
-        split("\n") | map(select(length>0))
-        | reduce .[] as $n ({}; . + { ($n): { url: ($base + $n) } })' 2>/dev/null || true)"
-  # converter 现在会自动回源 s-ui 原生订阅,users.json 只是给自定义映射用;空了也不影响
-  [[ -n "$map" && "$map" != "null" ]] && { echo "$map" > "$users_json"; ok "users.json 回填 $(echo "$map" | jq 'length') 人"; }
-  [[ -f "$users_json" ]] || echo '{}' > "$users_json"
-}
-
 _services(){ CONV_ADDR="$CONV_ADDR" SUI_ADDR="$SUI_ADDR" bash ensure-services.sh || warn "自启/自愈配置失败"; }
 
 _harden(){
   [[ "$(lc "$HARDEN")" == "no" ]] && { warn "HARDEN=no,跳过安全加固"; return; }
   # 不放行 SUI_PORT / SUI_SUB_PORT:s-ui 原生面板没有 TLS,明文暴露=管理员密码裸奔。
   # 它已由 nginx 经 HTTPS 反代到 ${SUI_BASE};订阅也走 443 的 /get/。本机回环不受防火墙限制。
-  local utcp="${SSH_PORT},80,${TLS_PORT}" uudp=""
+  local utcp="${SSH_PORT},80,${TLS_PORT}${TLS_PORT_LEGACY:+,${TLS_PORT_LEGACY}}" uudp=""
   case "$(lc "$WANT_REALITY")" in no|0|false) :;; *) utcp="${utcp},${REALITY_PORT}";; esac
   uudp="${HY2_PORT}"
-  SSH_PORT="$SSH_PORT" OPEN_TCP="$utcp" OPEN_UDP="$uudp" \
-  DISABLE_PASSWORD_AUTH=no bash harden.sh || warn "加固失败"
+  OPEN_TCP="$utcp" OPEN_UDP="$uudp" \
+  DISABLE_PASSWORD_AUTH="$DISABLE_PASSWORD_AUTH" bash harden.sh || warn "加固失败"
 }
 
 _selfcheck(){
@@ -301,13 +313,12 @@ _selfcheck(){
 
 main(){
   _prompt_config
-  # 日常发版只动我们自己的三块,不碰 s-ui / 证书 / 防火墙 / 节点
+  # 日常发版只动我们自己的几块(+ 端口跳跃要跟 converter 下发的一致),不碰 s-ui / 证书 / 节点
   if [[ "$MODE" == "panel" ]]; then
     _panel; _nginx; ok "面板已更新"; return
   fi
   if [[ "$MODE" == "update" ]]; then
-    HOP_PORTS_EFF=""; [[ "$(lc "$HOP_ENABLE")" != "no" ]] && HOP_PORTS_EFF="$HY2_HOP_PORTS"
-    _converter; _panel; _nginx; _selfcheck || warn "自检有告警"; ok "更新完成"; return
+    _converter; _panel; _nginx; _hopping; _selfcheck || warn "自检有告警"; ok "更新完成"; return
   fi
   _deps
   _sui
@@ -315,17 +326,16 @@ main(){
   _converter
   _panel
   _nginx
-  _harden     # 必须在 _nodes 之前:harden.sh 会 ufw --force reset,放在后面会冲掉节点端口
+  _harden
   _nodes
   _hopping
-  _seed_users
   _services
   _selfcheck || warn "自检有告警,见上"
   local div="────────────────────────────────────────────────────────"
   local ps=""; [[ "$TLS_PORT" != "443" ]] && ps=":${TLS_PORT}"
   echo ""; echo -e "${C}${div}${N}"
   echo -e "  ${G}▍面板(浏览器打开,登录=s-ui 账号密码):${N} https://${DOMAIN}${ps}${PANEL_PATH}"
-  echo -e "  ${G}▍s-ui 原面板(深水区):${N} http://${DOMAIN}:${SUI_PORT}${SUI_BASE}"
+  echo -e "  ${G}▍s-ui 原面板(深水区):${N} https://${DOMAIN}${ps}${SUI_BASE}"
   echo -e "  ${G}▍订阅地址:${N} https://${DOMAIN}${ps}/get/<会员名>"
   echo -e "  ${G}▍面板登录账号:${N} ${SUI_USER}"
   if [[ "$SUI_PASS_GENERATED" == "1" ]]; then
