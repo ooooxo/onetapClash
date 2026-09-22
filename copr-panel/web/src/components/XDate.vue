@@ -21,6 +21,9 @@ function clear() { emit('update:modelValue', ''); open.value = false }
 </script>
 <template>
   <div class="xdate">
+    <!-- 触屏用系统原生日期选择器:自绘日历在手机上会伸出屏幕底部。值格式同为 YYYY-MM-DD -->
+    <input class="xdate-n" type="date" :value="modelValue" aria-label="到期日期"
+      @change="emit('update:modelValue', ($event.target as HTMLInputElement).value)" />
     <div class="xdate-t" :class="{ open, ph: !modelValue }" @click="open = !open">
       <span>{{ modelValue || '选择日期' }}</span>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4.5" width="18" height="16" rx="2" /><path d="M3 9.5h18M8 2.5v4M16 2.5v4" stroke-linecap="round" /></svg>
@@ -31,7 +34,7 @@ function clear() { emit('update:modelValue', ''); open.value = false }
         <div class="cal-h"><button @click="nav(-1)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" /></svg></button><b>{{ title() }}</b><div class="sp" /><button @click="nav(1)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6" stroke-linecap="round" /></svg></button></div>
         <div class="cal-g">
           <div v-for="w in WD" :key="w" class="wd">{{ w }}</div>
-          <div v-for="(c, i) in cells()" :key="i" class="cal-d" :class="{ mut: !c.d, sel: c.ds === modelValue }" @click="c.d && pick(c.ds)">{{ c.d || '' }}</div>
+          <div v-for="(c, i) in cells()" :key="i" class="cal-d" :class="{ mut: !c.d, sel: !!c.d && c.ds === modelValue }" @click="c.d && pick(c.ds)">{{ c.d || '' }}</div>
         </div>
         <div class="cal-x"><button @click="clear">清除</button></div>
       </div>
@@ -57,4 +60,8 @@ function clear() { emit('update:modelValue', ''); open.value = false }
 .cal-x{display:flex;margin-top:8px;padding-top:8px;border-top:1px solid var(--sep)}
 .cal-x button{flex:1;font-size:12px;color:var(--ink-3);padding:6px;border-radius:var(--r-xs)}
 .cal-x button:hover{background:var(--hover);color:var(--ink)}
+.xdate-n{display:none;width:100%;min-height:46px;background:var(--inset);border:1px solid transparent;border-radius:var(--r-sm);
+         padding:11px 13px;color:var(--ink);font:inherit;font-size:16px;-webkit-appearance:none;appearance:none}
+.xdate-n:focus{outline:none;border-color:var(--accent)}
+@media (pointer:coarse){.xdate-n{display:block}.xdate-t,.cal,.bd{display:none}}
 </style>

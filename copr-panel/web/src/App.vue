@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import Icon from './components/Icon.vue'
 import { store, type ViewId } from './store'
 import { ui } from './ui'
@@ -17,14 +17,17 @@ import Toast from './components/Toast.vue'
 import { login, logout } from './api/client'
 function editFromDrawer(name: string) { ui.drawerName = undefined; ui.memberEditName = name }
 
-const NAV: { id: ViewId; label: string; icon: string }[] = [
-  { id: 'dash', label: '看板', icon: 'dashboard' },
-  { id: 'nodes', label: '节点', icon: 'nodes' },
-  { id: 'members', label: '会员', icon: 'members' },
-  { id: 'sub', label: '订阅分流', icon: 'sub' },
-  { id: 'traffic', label: '流量', icon: 'traffic' },
-  { id: 'settings', label: '设置', icon: 'settings' },
+// short:窄屏底部 tab 栏用的短名(6 个挤一行,每格 ≤2 字)
+const NAV: { id: ViewId; label: string; short: string; icon: string }[] = [
+  { id: 'dash', label: '看板', short: '看板', icon: 'dashboard' },
+  { id: 'nodes', label: '节点', short: '节点', icon: 'nodes' },
+  { id: 'members', label: '会员', short: '会员', icon: 'members' },
+  { id: 'sub', label: '订阅分流', short: '分流', icon: 'sub' },
+  { id: 'traffic', label: '流量', short: '流量', icon: 'traffic' },
+  { id: 'settings', label: '设置', short: '设置', icon: 'settings' },
 ]
+// 底部 tab 栏的滑动高亮:位置只由当前 view 推出来(与按钮的 on 同一个来源)
+const navIdx = computed(() => NAV.findIndex(n => n.id === store.view))
 const VIEWS: Record<ViewId, any> = { dash: Dashboard, nodes: Nodes, members: Members, sub: Sub, traffic: Traffic, settings: Settings }
 const SUB: Record<ViewId, string> = { dash: '概览与实时吞吐', nodes: '入站与协议', members: '订阅 · 流量 · 到期', sub: '地址与模块化规则', traffic: '用量统计', settings: '面板与安全' }
 
@@ -92,9 +95,19 @@ onMounted(async () => { try { await store.load() } catch { /* not logged in */ }
         <div class="sp" />
         <span class="chip" :class="store.live ? 'on' : 'gray'">{{ store.live ? '线上' : '未连接' }}</span>
         <button class="icbtn" aria-label="主题" @click="store.toggleTheme()"><Icon name="theme" :size="18" /></button>
+        <!-- 窄屏没有侧栏,退出挪到顶栏 -->
+        <button class="icbtn narrow" aria-label="退出" @click="doLogout"><Icon name="logout" :size="18" /></button>
       </header>
       <div class="view"><component :is="VIEWS[store.view]" /></div>
     </main>
+
+    <!-- 窄屏导航:侧栏折叠后换成底部 tab 栏(宽屏不显示) -->
+    <nav class="dock" aria-label="主导航">
+      <span class="dk-ind" aria-hidden="true" :style="{ transform: `translateX(${navIdx * 100}%)` }" />
+      <button v-for="n in NAV" :key="n.id" :class="{ on: store.view === n.id }" :aria-current="store.view === n.id ? 'page' : undefined" @click="store.view = n.id">
+        <span class="di"><Icon :name="n.icon" :size="20" /></span>{{ n.short }}
+      </button>
+    </nav>
   </div>
 
   <NodeEditor v-if="ui.nodeOpen" @close="ui.nodeOpen = false" />
@@ -118,15 +131,15 @@ onMounted(async () => { try { await store.load() } catch { /* not logged in */ }
 .btn:hover{filter:brightness(1.08)}.btn:active{transform:scale(.98)}
 .lerr{font-size:12px;color:var(--crit);text-align:center;margin-bottom:12px;font-weight:600}
 .tip{font-size:11px;color:var(--ink-4);text-align:center;margin-top:16px;line-height:1.5}
-.app{display:grid;grid-template-columns:224px 1fr;min-height:100vh}
+.app{display:grid;grid-template-columns:224px 1fr;min-height:100dvh}
 aside{background:var(--sidebar);border-right:1px solid var(--sep);display:flex;flex-direction:column;padding:18px 12px;position:sticky;top:0;height:100vh}
 .abrand{display:flex;align-items:center;gap:10px;padding:6px 8px 20px}
 .abrand .bi{width:30px;height:30px;border-radius:var(--r-sm)}
 .abrand b{font-size:14px;font-weight:700}.abrand span{font-size:11px;color:var(--ink-4);display:block}
-nav{display:flex;flex-direction:column;gap:2px}
-nav button{display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:var(--r-sm);color:var(--ink-3);font-size:14px;font-weight:550;text-align:left;transition:background var(--t-fast),color var(--t-fast)}
-nav button:hover{background:var(--hover);color:var(--ink-2)}
-nav button.on{background:var(--accent-soft);color:var(--accent-ink)}
+aside nav{display:flex;flex-direction:column;gap:2px}
+aside nav button{display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:var(--r-sm);color:var(--ink-3);font-size:14px;font-weight:550;text-align:left;transition:background var(--t-fast),color var(--t-fast)}
+aside nav button:hover{background:var(--hover);color:var(--ink-2)}
+aside nav button.on{background:var(--accent-soft);color:var(--accent-ink)}
 .spacer{flex:1}
 .auser{display:flex;align-items:center;gap:10px;padding:10px 8px;border-top:1px solid var(--sep);margin-top:8px}
 .auser .av{width:30px;height:30px;border-radius:var(--r-pill);background:var(--panel-2);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--ink-2)}
@@ -139,5 +152,34 @@ main{background:var(--bg-content);min-width:0;display:flex;flex-direction:column
 .icbtn{width:36px;height:36px;border-radius:var(--r-sm);color:var(--ink-3);display:flex;align-items:center;justify-content:center;transition:background var(--t-fast),color var(--t-fast)}
 .icbtn:hover{background:var(--hover);color:var(--ink)}
 .view{padding:26px 28px;flex:1;animation:fu .34s var(--ease-out) both}
-@media (max-width:820px){.app{grid-template-columns:1fr}aside{display:none}}
+/* 底部 tab 栏:只在窄屏出现 */
+.dock,.narrow{display:none}
+@media (max-width:820px){
+  .app{grid-template-columns:1fr}aside{display:none}
+  .top{padding:12px 16px;padding-top:max(12px,env(safe-area-inset-top));gap:8px}
+  .top h2{font-size:17px}
+  .narrow{display:flex}
+  .icbtn{width:44px;height:44px}
+  .view{padding:16px;padding-bottom:calc(var(--dock) + 20px)}
+  /* 登录框贴边,输入框 16px:iOS 聚焦字号 <16px 的输入框会整页放大 */
+  .lgc{padding:28px 22px}
+  .fld input{font-size:16px}
+  .dock{display:grid;grid-template-columns:repeat(6,1fr);position:fixed;left:0;right:0;bottom:0;z-index:30;
+        height:var(--dock);padding:6px 4px env(safe-area-inset-bottom);
+        background:color-mix(in srgb,var(--sidebar) 92%,transparent);backdrop-filter:blur(14px);border-top:1px solid var(--sep)}
+  .dock button{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:3px;padding-top:4px;
+               font-size:11px;font-weight:600;color:var(--ink-3);transition:color var(--t-fast)}
+  .dock .di{width:44px;height:28px;border-radius:var(--r-pill);display:flex;align-items:center;justify-content:center;
+            transition:background var(--t-fast),transform var(--t-fast) var(--ease-out)}
+  /* 选中双通道:色 + 图标底 */
+  .dock button.on{color:var(--accent-ink)}
+  /* 高亮底是一块会滑动的 .dk-ind:切 tab 时从旧位置滑到新位置(屏内移动 → ease-in-out) */
+  .dk-ind{position:absolute;left:4px;top:10px;width:calc((100% - 8px) / 6);height:28px;pointer-events:none;
+          transition:transform var(--t-med) var(--ease-in-out)}
+  .dk-ind::before{content:"";position:absolute;left:50%;width:44px;height:100%;margin-left:-22px;border-radius:var(--r-pill);background:var(--accent-soft)}
+  .dock button{position:relative}
+  .dock button:active .di{transform:scale(.92)}
+  @media (prefers-reduced-motion:reduce){.dk-ind{transition:none}}
+  .dock button:focus-visible{outline:none}.dock button:focus-visible .di{outline:2px solid var(--accent);outline-offset:1px}
+}
 </style>

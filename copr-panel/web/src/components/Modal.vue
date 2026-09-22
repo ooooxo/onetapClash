@@ -23,4 +23,14 @@ onUnmounted(() => document.removeEventListener('keydown', onKey))
 @keyframes pop{from{opacity:0;transform:translateY(12px) scale(.97)}}
 .mox{position:absolute;top:16px;right:16px;width:30px;height:30px;border-radius:var(--r-sm);background:var(--inset);color:var(--ink-3);display:flex;align-items:center;justify-content:center}
 .mox:hover{background:var(--hover-2);color:var(--ink)}
+/* 窄屏:底部弹层(sheet)—— 贴底、全宽、上圆角;操作行钉在底部,表单再长也够得到「创建」 */
+@media (max-width:820px){
+  .ov{align-items:flex-end;padding:0;padding-top:env(safe-area-inset-top)}
+  .mo,.mo.wide{width:100%;max-height:92dvh;border-radius:var(--r-xl) var(--r-xl) 0 0;padding:22px 16px 0;
+               animation:up .3s var(--ease-out) both;overscroll-behavior:contain}
+  .mox{top:14px;right:12px;width:44px;height:44px}
+  .mo :slotted(.marow){position:sticky;bottom:0;z-index:2;margin:18px -16px 0;padding:12px 16px calc(12px + env(safe-area-inset-bottom));
+                       background:var(--panel);border-top:1px solid var(--hairline)}
+  @keyframes up{from{transform:translateY(100%)}}
+}
 </style>

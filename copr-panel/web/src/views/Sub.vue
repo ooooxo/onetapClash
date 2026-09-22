@@ -136,5 +136,6 @@ const base = () => store.subUrl('') + '<会员名>'
 .del:hover{color:var(--crit)}
 .addr{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--ink-3);padding:7px 10px;border-radius:var(--r-xs);background:var(--inset);margin-top:2px}
 .addr:hover{color:var(--accent-ink)}
+@media (max-width:820px){.rrow input{font-size:16px}.del{width:44px;height:44px}}
 .yaml{background:var(--bg-window);border:1px solid var(--sep);border-radius:var(--r-md);padding:15px;font-family:var(--font-mono);font-size:11.5px;line-height:1.65;color:var(--ink-2);white-space:pre;overflow:auto;max-height:420px}
 </style>

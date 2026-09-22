@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import Icon from './Icon.vue'
 import { store } from '../store'
 import { save } from '../api/client'
@@ -31,23 +31,40 @@ const url = computed(() => store.subUrl(props.name))
 // s-ui 的 api/resetTraffic 是【全局】清零(无 client 参数),按单人用会把所有人流量清掉;
 // 单人重置只能去 s-ui 原面板操作,这里不做假按钮。
 function openSui() { window.open(store.suiUrl(), '_blank') }
+// 手机上发订阅:系统分享面板(微信/Telegram/短信…);不支持的浏览器(多数桌面)只给复制
+const canShare = typeof navigator !== 'undefined' && !!navigator.share
+const copied = ref(false)
+let copiedT = 0
+function copy() {
+  copyText(url.value)
+  copied.value = true; clearTimeout(copiedT)
+  copiedT = window.setTimeout(() => { copied.value = false }, 1600)
+}
+async function share() {
+  try { await navigator.share({ title: `${props.name} 的订阅`, url: url.value }) }
+  catch (e: any) { if (e?.name !== 'AbortError') copy() }   // 用户取消分享不算失败;其他失败退回复制
+}
 function onKey(e: KeyboardEvent) { if (e.key === 'Escape') emit('close') }
 onMounted(() => document.addEventListener('keydown', onKey))
-onUnmounted(() => document.removeEventListener('keydown', onKey))
+onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout(copiedT) })
 </script>
 <template>
   <div class="bd" @click="emit('close')" />
   <div class="dr open">
     <div class="drh">
       <div class="av">{{ m.name[0].toUpperCase() }}</div>
-      <div><b>{{ m.name }}</b><div class="mst">{{ m.on ? '在线' : '离线' }} · {{ m.exp }}</div></div>
+      <div><b>{{ m.name }}</b><div class="mst"><span class="chip" :class="m.on ? 'on' : 'gray'">{{ m.on ? '在线' : '离线' }}</span><span class="chip gray">到期 {{ m.exp }}</span></div></div>
       <div class="sp" />
       <button class="dredit" @click="emit('edit', m.name)">编辑</button>
       <button class="mox" aria-label="关闭" @click="emit('close')"><Icon name="close" :size="14" /></button>
     </div>
     <div class="qr" v-html="qrSvg(url)" />
     <div class="qrcap">扫码导入订阅(Clash Verge / mihomo)</div>
-    <div class="url"><code>{{ url }}</code><button class="cpy" @click="copyText(url)">复制</button></div>
+    <div class="url"><code class="sel">{{ url }}</code></div>
+    <div class="shr">
+      <button v-if="canShare" class="sp1" @click="share">分享订阅</button>
+      <button :class="canShare ? 'sp2' : 'sp1'" @click="copy">{{ copied ? '已复制' : '复制链接' }}</button>
+    </div>
     <div class="lb" style="margin-top:8px">累计用量</div>
     <div class="urow"><b class="num">{{ m.gb }} GB</b><span>占比 {{ (m.gb / mx * 100).toFixed(0) }}%</span></div>
     <div class="ubar"><i :style="{ width: (m.gb / mx * 100) + '%' }" /></div>
@@ -63,7 +80,14 @@ onUnmounted(() => document.removeEventListener('keydown', onKey))
 @keyframes sl{from{transform:translateX(100%)}}
 .drh{display:flex;align-items:center;gap:10px;margin-bottom:20px}
 .drh .av{width:40px;height:40px;border-radius:var(--r-pill);background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-weight:700}
-.drh b{font-size:17px;font-weight:700}.drh .mst{font-size:12px;color:var(--ink-3)}.drh .sp{flex:1}
+.drh b{font-size:17px;font-weight:700}.drh .mst{display:flex;gap:6px;margin-top:4px}.drh .sp{flex:1}
+.sel{user-select:text}
+.shr{display:flex;gap:9px;margin:10px 0 22px}
+.shr button{flex:1;min-height:44px;border-radius:var(--r-sm);font-size:14px;font-weight:650;transition:filter var(--t-fast),transform var(--t-fast) var(--ease-out)}
+.shr .sp1{background:var(--accent);color:#fff}
+.shr .sp2{background:var(--inset);color:var(--ink-2)}
+.shr button:active{transform:scale(.97)}
+.shr button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .dredit{background:var(--inset);color:var(--ink-2);border-radius:var(--r-xs);padding:6px 12px;font-size:12px;font-weight:600;margin-right:6px}
 .dredit:hover{background:var(--hover-2)}
 .mox{width:30px;height:30px;border-radius:var(--r-sm);background:var(--inset);color:var(--ink-3);display:flex;align-items:center;justify-content:center}
@@ -80,4 +104,12 @@ onUnmounted(() => document.removeEventListener('keydown', onKey))
 .dract button{flex:1;padding:11px;border-radius:var(--r-sm);font-size:13px;font-weight:600}
 .dract .g{background:var(--inset);color:var(--ink-2)}
 .dract .r{background:color-mix(in srgb,var(--crit) 15%,transparent);color:var(--crit)}
+/* 窄屏:底部弹层,与 Modal 一致 */
+@media (max-width:820px){
+  .dr{top:auto;left:0;width:100%;max-height:92dvh;border-radius:var(--r-xl) var(--r-xl) 0 0;
+      padding:20px 16px calc(20px + env(safe-area-inset-bottom));animation:up .3s var(--ease-out);overscroll-behavior:contain}
+  @keyframes up{from{transform:translateY(100%)}}
+  .mox,.dredit{min-height:44px}.mox{width:44px}
+  .dract button{min-height:44px}
+}
 </style>

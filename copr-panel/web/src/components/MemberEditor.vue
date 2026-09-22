@@ -9,7 +9,7 @@ import { ruuid, rb64 } from '../lib/rand'
 import { buildClient, extLink } from '../lib/suiClient'
 import { save as apiSave, getClient } from '../api/client'
 import { copyText } from '../lib/qr'
-import { toast } from '../ui'
+import { toast, ui } from '../ui'
 
 const props = defineProps<{ editName?: string }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -139,6 +139,8 @@ async function save() {
     await store.load()
     toast((isEdit ? '已保存 ' : '会员已创建 ') + nm)
     emit('close')
+    // 新建完直接打开这个会员:二维码 + 分享/复制就在眼前,不用回列表再找
+    if (!isEdit) ui.drawerName = nm
   } catch (e: any) { toast((isEdit ? '保存失败: ' : '创建失败: ') + (e?.message || e)) }
   busy.value = false
 }
