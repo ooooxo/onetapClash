@@ -209,7 +209,8 @@ fi
 sleep 2
 ss -lun | grep ":${HY2_PORT}\b" >/dev/null && echo "[OK] Hysteria2 监听 UDP ${HY2_PORT}" \
   || echo "[!] UDP ${HY2_PORT} 没监听,看 journalctl -u s-ui"
-if [[ "$(printf '%s' "$WANT_REALITY" | tr 'A-Z' 'a-z')" != "no" ]]; then
+# 与上面 Python 建节点、bootstrap 放行端口的判定一致(no/0/false 都算关)
+if [[ ! "$(printf '%s' "$WANT_REALITY" | tr 'A-Z' 'a-z')" =~ ^(no|0|false)$ ]]; then
   ss -lnt | grep ":${REALITY_PORT}\b" >/dev/null && echo "[OK] Reality 监听 TCP ${REALITY_PORT}" \
     || echo "[!] TCP ${REALITY_PORT} 没监听,看 journalctl -u s-ui"
 fi
