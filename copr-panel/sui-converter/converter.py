@@ -348,6 +348,11 @@ def build_clash_config(proxies, userinfo, mgmt_domain=None):
         while name in taken:
             n += 1; name = f"{base} {n}"
         p["name"] = name; taken.add(name)
+        # 服务器按 IPv4 部署时,连节点必须严格走 v4:Clash Verge 用自己的 IPv6 开关(默认开)覆盖订阅顶层
+        # ipv6,dns.ipv6 也挡不住节点域名的 AAAA 查询 → 域名一旦有 AAAA,TCP 节点就 v4/v6 竞速。
+        # 节点级 ip-version 客户端不会改写,是订阅侧唯一可靠的开关。
+        if not CLIENT_IPV6:
+            p["ip-version"] = "ipv4"
 
     # 内联 GEOSITE/GEOIP + 自定义规则(无 rule-providers)
     rules = []

@@ -2,20 +2,16 @@
 # 登录限速:面板/原生面板的登录接口对公网开放,fail2ban 只管 SSH;每 IP 每分钟 6 次,超了回 429
 limit_req_zone $binary_remote_addr zone=copr_login:1m rate=6r/m;
 limit_req_status 429;
-# :80 —— 订阅(http,地址不变)+ ACME 续期 + 面板强制跳 https
+# :80 —— ACME 续期 + 面板/订阅强制跳 https
 server {
     listen 80;
     listen [::]:80;
     server_name ${DOMAIN};
     location ^~ /.well-known/acme-challenge/ { root /var/www/certbot; }
     location ${PANEL_PATH} { return 301 https://$host:${TLS_PORT}$request_uri; }
-    location /get/ {
-        proxy_pass http://${CONV_ADDR};
-        proxy_set_header Host $host;
-        proxy_pass_header Subscription-Userinfo;
-        add_header Access-Control-Allow-Origin *;
-        add_header Access-Control-Expose-Headers Subscription-Userinfo;
-    }
+    # 订阅内容 = 节点协议 + 密码 + Reality 公钥,明文 HTTP 下发等于把节点指纹交给线路上的 DPI。
+    # 老的 http:// 订阅地址靠 301 继续可用(Clash Verge / mihomo / Shadowrocket 都跟随跳转)
+    location /get/ { return 301 https://$host:${TLS_PORT}$request_uri; }
     location /admin/ { allow 127.0.0.1; deny all; proxy_pass http://${CONV_ADDR}; proxy_set_header X-Admin-Secret $http_x_admin_secret; }
     location / { return 200 "OK"; add_header Content-Type text/plain; }
 }
