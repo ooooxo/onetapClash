@@ -176,6 +176,7 @@ _converter(){
   done
   cp ../sui-converter/converter.py       "$CONV_DIR/converter.py"
   cp ../sui-converter/rules.default.json "$CONV_DIR/rules.default.json"
+  cp ../sui-converter/tencent-cidr.txt   "$CONV_DIR/tencent-cidr.txt"
   if ! "$CONV_DIR/venv/bin/python" -c "import flask,requests,yaml" >/dev/null 2>&1; then
     log "重建 converter venv..."
     rm -rf "$CONV_DIR/venv"; python3 -m venv "$CONV_DIR/venv"

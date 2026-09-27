@@ -29,6 +29,7 @@ sudo bash bootstrap.sh              # 装 s-ui → 证书 → 开节点 → conv
 - **回源**:`/get/<name>` 默认直接回源 s-ui 原生订阅,所以面板里新建的会员**立刻**能用,不需要注册到 `users.json`。`users.json` 只用于自定义映射(接第三方订阅)。
 - **分流**:规则读 `rules.json`(默认值在 `rules.default.json`),面板「订阅分流」页可视化增删改、拖拽排序。
 - **内联 GEOSITE/GEOIP,不用 rule-providers**:早期版本用 GitHub raw 上的 `.mrs` 规则集,国内客户端拉不到直接全崩。现在改成内联 `GEOSITE,xx` / `GEOIP,xx`,mihomo 自带数据,零外部下载。
+- **腾讯直连(内置,面板不可改)**:微信会绕开 DNS 直连写死的 IP,其中香港/新加坡那批不在 `GEOIP,CN` 里,原本会落到 `MATCH` 走节点 → 全体会员的微信挤在同一个机房 IP 上(风控),图片/通话/消息也慢。converter 把腾讯 AS132203/AS45090 的全部网段(`sui-converter/tencent-cidr.txt`,约 250 条)以 `IP-CIDR,…,DIRECT,no-resolve` 插在所有模块之前。不用 `IP-ASN`:它要客户端从 GitHub 下 ASN 库。更新列表:`python3 sui-converter/gen-tencent-cidr.py` → 提交 → `push.sh`。
 - **防泄漏**:关 IPv6(服务器只有 v4 时防双栈绕过)、fake-ip 防污染、STUN/WebRTC 端口 REJECT、管理域名强制 DIRECT(连着 VPN 也能打开面板和更新订阅)。
 
 ## 改完怎么发上去

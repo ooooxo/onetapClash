@@ -37,6 +37,13 @@ if (HY2_UP_MBPS or HY2_DOWN_MBPS) and not all(re.fullmatch(r"[1-9][0-9]*", v) fo
 # 服务器有公网 IPv6(域名有 AAAA)时设 yes。mihomo 全局 ipv6:false 会直接拒绝解析/拨号任何 v6 地址
 # (resolver.ErrIPv6Disabled,连 v6 字面量都不行),节点只剩 v6 可达时客户端必然连不上。
 CLIENT_IPV6 = os.environ.get("CLIENT_IPV6", "").lower() in ("yes", "1", "true")
+# 腾讯直连(内置规则):微信绕开 DNS 直连写死的 IP,其中 HK/SG 那批不在 GEOIP,CN 里 → 落到 MATCH 走节点,
+# 于是全部会员的微信挤在同一个机房出口 IP 上(风控)、图片/通话绕境外一圈。IP-ASN 要客户端从 GitHub
+# 下 ASN 库,国内拉不到,所以网段内联进订阅。列表由 gen-tencent-cidr.py 生成;缺文件/空文件直接起不来。
+with open(os.path.join(BASE, "tencent-cidr.txt")) as _f:
+    TENCENT_CIDRS = [l.strip() for l in _f if l.strip() and not l.startswith("#")]
+if not TENCENT_CIDRS:
+    sys.exit("tencent-cidr.txt 为空,先跑 gen-tencent-cidr.py")
 
 
 # admin 写接口的 读-改-写 串行化:两个请求并发保存时,后写的会吞掉先写的改动
@@ -315,8 +322,10 @@ def build_dns(direct_domains=None):
     # - 境外域名走远端 DoH(经节点),境内走国内 DNS;proxy-server-nameserver 解析节点自身域名走国内直连,避免回环
     # - fake-ip 防污染。服务器没有 IPv6 时关掉 AAAA,减少 IPv6 直连泄漏面(见 CLIENT_IPV6)
     # - direct_domains:管理域名(面板/订阅/节点)加入 fake-ip-filter,拿真实 IP,连着 VPN 也能直连打开
+    # localhost.* 两条:企业微信 / QQ 网页一键登录靠它们解析到 127.0.0.1 找本机客户端,拿假 IP 就找不到
     fake_ip_filter = ["*.lan", "+.local", "localhost", "*.localdomain",
-                      "+.pool.ntp.org", "time.*.com", "*.msftconnecttest.com"]
+                      "+.pool.ntp.org", "time.*.com", "*.msftconnecttest.com",
+                      "localhost.work.weixin.qq.com", "localhost.ptlogin2.qq.com"]
     for d in (direct_domains or []):
         if d:
             fake_ip_filter += [d, f"+.{d}"]
@@ -366,6 +375,9 @@ def build_clash_config(proxies, userinfo, mgmt_domain=None):
             rules.append(f"GEOIP,{gi},{policy},no-resolve")
         for r in mod.get("rules", []):
             rules.append(r)
+    # 腾讯直连排在所有分流模块前(含防泄漏的 3478/5349 REJECT);no-resolve = 只抓不带域名的连接,
+    # 用域名访问腾讯云上的境外网站仍按域名规则走
+    rules[:0] = [f"IP-CIDR{'6' if ':' in c else ''},{c},DIRECT,no-resolve" for c in TENCENT_CIDRS]
     # 管理域名(面板/订阅/节点同域)强制直连 —— 连着 VPN 也能直接打开面板/更新订阅,不回环
     if mgmt_domain:
         rules.insert(0, f"DOMAIN-SUFFIX,{mgmt_domain},DIRECT")

@@ -50,7 +50,8 @@ async function saveRules() {
 // 预览按 converter 的 build_clash_config 同一套逻辑拼:内联 GEOSITE/GEOIP,无 rule-providers。
 const rulesPreview = computed(() => {
   if (!cfg.value) return ''
-  const out: string[] = [`DOMAIN-SUFFIX,${store.domain},DIRECT   # 管理域名强制直连`]
+  const out: string[] = [`DOMAIN-SUFFIX,${store.domain},DIRECT   # 管理域名强制直连`,
+    `IP-CIDR,…,DIRECT,no-resolve   # 腾讯直连:内置 AS132203/AS45090 全部网段(见 tencent-cidr.txt)`]
   for (const m of cfg.value.modules) {
     if (!m.enabled) continue
     for (const gs of m.geosite ?? []) out.push(`GEOSITE,${gs},${m.policy}`)
