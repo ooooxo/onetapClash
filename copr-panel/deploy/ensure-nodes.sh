@@ -5,6 +5,7 @@
 #   怎么跑: sudo bash ensure-nodes.sh          (读同目录 config.env)
 #   需要什么: s-ui 已在跑、管理员账号密码、域名证书(hy2 用)
 #   已存在同名 tag 不重建;但已有的 hy2 节点会被校正(TLS 换 LE 证书、obfs/拥塞控制对齐配置),
+#   已有的 Reality 节点会被校正握手目标(密钥不变),
 #   不走订阅、手工导入分享链接的客户端需要重新导入。可以反复跑。
 #   单独跑时需要 SUI_PASS(环境变量传入,别写进 config.env):SUI_PASS=xxx sudo -E bash ensure-nodes.sh
 # 参数集中在这里:
@@ -24,7 +25,8 @@ HY2_TAG="${HY2_TAG:-quick}"
 HY2_PORT="${HY2_PORT:-443}"                  # UDP;nginx 占的是 TCP 443,不冲突
 REALITY_TAG="${REALITY_TAG:-reality}"
 REALITY_PORT="${REALITY_PORT:-8443}"         # TCP;443/tcp 通常被 nginx 占着
-REALITY_DEST="${REALITY_DEST:-www.apple.com}"
+REALITY_DEST="${REALITY_DEST:-}"             # 留空 = 偷自己:握手转给本机 nginx 的 $DOMAIN;填域名 = 借别人的站
+TLS_PORT="${TLS_PORT:-443}"                  # 偷自己时握手目标 = 127.0.0.1:TLS_PORT(nginx)
 TLS_CERT="${TLS_CERT:-}"
 TLS_KEY="${TLS_KEY:-}"
 WANT_REALITY="${WANT_REALITY:-yes}"
@@ -44,7 +46,7 @@ umask 077
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 export WORK
 export DOMAIN SUI_ADDR SUI_BASE SUI_USER SUI_PASS HY2_TAG HY2_PORT \
-       REALITY_TAG REALITY_PORT REALITY_DEST TLS_CERT TLS_KEY WANT_REALITY \
+       REALITY_TAG REALITY_PORT REALITY_DEST TLS_PORT TLS_CERT TLS_KEY WANT_REALITY \
        HY2_OBFS HY2_OBFS_PASSWORD HY2_UP_MBPS HY2_DOWN_MBPS
 
 python3 - <<'PY'
@@ -82,7 +84,8 @@ if r.get("success") is not True:
 print("[OK] s-ui 登录成功")
 
 existing = {i["tag"]: i for i in (jget("/api/inbounds").get("obj") or {}).get("inbounds") or []}
-tls_by_name = {t["name"]: t["id"] for t in (jget("/api/load?lu=0").get("obj") or {}).get("tls") or []}
+tls_all = (jget("/api/load?lu=0").get("obj") or {}).get("tls") or []
+tls_by_name = {t["name"]: t["id"] for t in tls_all}
 opened = []   # (port, proto) 供防火墙放行
 
 def ensure_tls(name, server, client):
@@ -169,27 +172,57 @@ opened.append((E["HY2_PORT"], "udp"))
 
 # ── VLESS + Vision + Reality(TCP)───────────────────────────────────────────
 if E["WANT_REALITY"].lower() not in ("no", "0", "false"):
+    # 握手目标。偷自己(默认):SNI = 本域名,握手转给本机 nginx —— 探测者看到的是本域名的真证书和真站点,
+    # SNI 解析出的 IP 就是本机,不会出现"SNI 是 CDN 大站、IP 却是小 VPS"的错位。
+    if E["REALITY_DEST"]:
+        SNI, HS = E["REALITY_DEST"], {"server": E["REALITY_DEST"], "server_port": 443}
+    else:
+        SNI, HS = E["DOMAIN"], {"server": "127.0.0.1", "server_port": int(E["TLS_PORT"])}
+
+    def reality_tls(priv, pub, sid):
+        return ensure_tls(f"reality-{SNI}", {
+            "enabled": True, "server_name": SNI,
+            "reality": {"enabled": True, "handshake": HS, "private_key": priv, "short_id": [sid]},
+        }, {"enabled": True, "server_name": SNI,
+            "utls": {"enabled": True, "fingerprint": "chrome"},
+            "reality": {"enabled": True, "public_key": pub, "short_id": sid}})
+
     def reality():
         kp = jget("/api/keypairs?k=reality").get("obj") or []
         pick = lambda p: next((x.split(": ", 1)[1] for x in kp if x.startswith(p)), "")
         priv, pub = pick("PrivateKey"), pick("PublicKey")
         if not priv or not pub:
             die("拿不到 Reality 密钥对")
-        sid = secrets.token_hex(4)
-        dest = E["REALITY_DEST"]
-        tls_id = ensure_tls(f"reality-{dest}", {
-            "enabled": True, "server_name": dest,
-            "reality": {"enabled": True, "handshake": {"server": dest, "server_port": 443},
-                        "private_key": priv, "short_id": [sid]},
-        }, {"enabled": True, "server_name": dest,
-            "utls": {"enabled": True, "fingerprint": "chrome"},
-            "reality": {"enabled": True, "public_key": pub, "short_id": sid}})
         # 不要带 transport:{} —— 空 transport 会让 s-ui 生成链接时报 malformed JSON
         return {"id": 0, "type": "vless", "tag": E["REALITY_TAG"], "listen": "::",
-                "listen_port": int(E["REALITY_PORT"]), "tls_id": tls_id,
+                "listen_port": int(E["REALITY_PORT"]), "tls_id": reality_tls(priv, pub, secrets.token_hex(4)),
                 "addrs": [{"server": E["DOMAIN"], "server_port": int(E["REALITY_PORT"])}],
                 "out_json": {}}
+
+    def reconcile_reality():
+        """已有节点的握手目标与期望不一致 → 复制原 TLS 记录(密钥、short_id 原样)只改握手目标/SNI,
+        存成新记录再切 tls_id。不原地改旧记录:换 tls_id 与 hy2 校正同一条路,s-ui 会重建分享链接。"""
+        cur = existing.get(E["REALITY_TAG"])
+        if not cur:
+            return
+        old = next((t for t in tls_all if t["id"] == cur.get("tls_id")), None)
+        if old is None:
+            die(f"入站 {E['REALITY_TAG']} 的 TLS 记录(id={cur.get('tls_id')})不存在")
+        if old["server"].get("server_name") == SNI and old["server"]["reality"].get("handshake") == HS:
+            print(f"[skip] 入站 {E['REALITY_TAG']} 的握手目标已是 {SNI}")
+            return
+        server = json.loads(json.dumps(old["server"]))
+        client = json.loads(json.dumps(old["client"]))
+        server["server_name"], server["reality"]["handshake"] = SNI, HS
+        client["server_name"] = SNI
+        new = dict(cur, tls_id=ensure_tls(f"reality-{SNI}", server, client))
+        res = save("inbounds", "edit", new)
+        if res.get("success") is not True:
+            die(f"校正入站 {E['REALITY_TAG']} 失败: {res.get('msg')}")
+        print(f"[OK] 入站 {E['REALITY_TAG']} 握手目标 {old['server'].get('server_name')} → {SNI}")
+
     ensure_inbound(E["REALITY_TAG"], reality)
+    reconcile_reality()
     opened.append((E["REALITY_PORT"], "tcp"))
 
 with open(f"{E['WORK']}/ports", "w") as f:
