@@ -5,7 +5,7 @@
 #   怎么跑: sudo bash ensure-nodes.sh          (读同目录 config.env)
 #   需要什么: s-ui 已在跑、管理员账号密码、域名证书(hy2 用)
 #   已存在同名 tag 不重建;但已有的 hy2 节点会被校正(TLS 换 LE 证书、obfs/拥塞控制对齐配置),
-#   已有的 Reality 节点会被校正握手目标(密钥不变),
+#   已有的 Reality 节点会被校正握手目标(密钥不变),s-ui 路由补上拦 BT / 拦私网目标两条规则,
 #   不走订阅、手工导入分享链接的客户端需要重新导入。可以反复跑。
 #   单独跑时需要 SUI_PASS(环境变量传入,别写进 config.env):SUI_PASS=xxx sudo -E bash ensure-nodes.sh
 # 参数集中在这里:
@@ -83,7 +83,15 @@ if r.get("success") is not True:
     die(f"s-ui 登录失败: {r.get('msg')}")
 print("[OK] s-ui 登录成功")
 
+# /api/inbounds 只给摘要(id/tag/端口/tls_id…),没有 obfs、addrs、out_json;校正前必须按 id 取完整记录,
+# 否则拿摘要去比对永远"有差异",拿摘要去保存会冲掉面板上改过的其他选项
 existing = {i["tag"]: i for i in (jget("/api/inbounds").get("obj") or {}).get("inbounds") or []}
+
+def full_inbound(tag):
+    got = (jget(f"/api/inbounds?id={existing[tag]['id']}").get("obj") or {}).get("inbounds") or []
+    if len(got) != 1:
+        die(f"取入站 {tag} 完整记录失败")
+    return got[0]
 tls_all = (jget("/api/load?lu=0").get("obj") or {}).get("tls") or []
 tls_by_name = {t["name"]: t["id"] for t in tls_all}
 opened = []   # (port, proto) 供防火墙放行
@@ -139,9 +147,9 @@ def reconcile_hy2():
     """节点已存在时,把 TLS / obfs / 拥塞控制校正到期望值 —— 只改这几项,其余原样保留。
     TLS:老部署的 hy2 常是自签证书 + 冒充别人的 SNI + 客户端 insecure,这是明显的特征;
     统一换成本域名的 LE 证书(s-ui 会按新 TLS 重建 out_json,分享链接随之更新)。"""
-    cur = existing.get(E["HY2_TAG"])
-    if not cur:
+    if E["HY2_TAG"] not in existing:
         return
+    cur = full_inbound(E["HY2_TAG"])
     want = {"tls_id": le_tls(), **hy2_tuning(cur)}
     drift = {k: v for k, v in want.items() if cur.get(k) != v}
     if not OBFS_ON and "obfs" in cur:
@@ -202,9 +210,9 @@ if E["WANT_REALITY"].lower() not in ("no", "0", "false"):
     def reconcile_reality():
         """已有节点的握手目标与期望不一致 → 复制原 TLS 记录(密钥、short_id 原样)只改握手目标/SNI,
         存成新记录再切 tls_id。不原地改旧记录:换 tls_id 与 hy2 校正同一条路,s-ui 会重建分享链接。"""
-        cur = existing.get(E["REALITY_TAG"])
-        if not cur:
+        if E["REALITY_TAG"] not in existing:
             return
+        cur = full_inbound(E["REALITY_TAG"])
         old = next((t for t in tls_all if t["id"] == cur.get("tls_id")), None)
         if old is None:
             die(f"入站 {E['REALITY_TAG']} 的 TLS 记录(id={cur.get('tls_id')})不存在")
@@ -224,6 +232,31 @@ if E["WANT_REALITY"].lower() not in ("no", "0", "false"):
     ensure_inbound(E["REALITY_TAG"], reality)
     reconcile_reality()
     opened.append((E["REALITY_PORT"], "tcp"))
+
+# ── 服务端路由加固 ───────────────────────────────────────────────────────────
+# BT 流量招投诉、也是 IP 被标记的常见诱因;私网目标 = 会员能经代理摸到本机 127.0.0.1 上的
+# s-ui 面板 / converter 等内部服务。插在开头的 sniff / hijack-dns 之后:协议要先嗅探出来才能匹配,
+# 且发往私网 DNS(如 192.168.1.1:53)的查询应先被劫持应答,不能被私网规则直接拒掉。
+HARDEN_RULES = [{"protocol": ["bittorrent"], "action": "reject"},
+                {"ip_is_private": True, "action": "reject"}]
+cfg = (jget("/api/load?lu=0").get("obj") or {}).get("config")
+if not isinstance(cfg, dict):
+    die("取不到 s-ui 的 sing-box 基础配置")
+rules = cfg.setdefault("route", {}).setdefault("rules", [])
+missing = [r for r in HARDEN_RULES if r not in rules]
+if missing:
+    if not any(r.get("action") == "sniff" for r in rules):
+        rules.insert(0, {"action": "sniff"})
+    at = 0
+    while at < len(rules) and rules[at].get("action") in ("sniff", "hijack-dns"):
+        at += 1
+    rules[at:at] = missing
+    res = save("config", "set", cfg)
+    if res.get("success") is not True:
+        die(f"写入路由加固规则失败: {res.get('msg')}")
+    print(f"[OK] 路由加固:{len(missing)} 条规则已加(拦 BT、拦私网目标)")
+else:
+    print("[skip] 路由加固规则已存在")
 
 with open(f"{E['WORK']}/ports", "w") as f:
     f.write("\n".join(f"{p}/{proto}" for p, proto in opened))
