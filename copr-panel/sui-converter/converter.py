@@ -453,7 +453,13 @@ def get_sub(username):
     # 优先 users.json 的自定义映射;否则回源 s-ui 原生订阅(面板/后台建的会员即刻可用,无需手动注册)
     if isinstance(entry, dict) and entry.get("url"):
         url = entry["url"]
+        # users.json 里的别名(如 test → s-ui 会员 aa):附属节点上镜像的是 s-ui 会员名,要按它去取;
+        # 指向外部订阅的映射没有对应会员,不带附属节点
+        base = SUI_SUB_BASE.rstrip("/") + "/"
+        path = url.split("?", 1)[0]
+        member = unquote(path[len(base):].split("/", 1)[0]) if path.startswith(base) else None
     else:
+        member = username
         # 会员名可能带空格/#/?/中文(Flask 已解码),必须重新编码成单段路径,否则打到 s-ui 别的路径上
         url = f"{SUI_SUB_BASE.rstrip('/')}/{quote(username, safe='')}"
     try:
@@ -473,7 +479,7 @@ def get_sub(username):
         return Response("No proxies found", status=502)
     # 本机节点在前(自动组 fallback 的主节点仍是本机 hy2),附属节点的在后;都按前缀区分
     satellites.prefix(proxies, (satellites.load().get("local") or {}).get("label", ""))
-    extra = satellites.fetch_proxies(username, extract_proxies, app.logger)
+    extra = satellites.fetch_proxies(member, extract_proxies, app.logger) if member else []
     return build_clash_config(proxies, resp.headers.get("Subscription-Userinfo", ""), _mgmt_domain(request.host), extra)
 
 
