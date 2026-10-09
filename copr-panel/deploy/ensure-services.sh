@@ -17,6 +17,7 @@ CONV_ADDR="${CONV_ADDR:-127.0.0.1:25501}"
 SUI_ADDR="${SUI_ADDR:-127.0.0.1:${SUI_PORT:-2095}}"
 SERVICES="${SERVICES:-s-ui sui-converter nginx fail2ban}"
 SWAP_MB="${SWAP_MB:-1024}"                  # 没有 swap 时建的 swapfile 大小;0 = 不建
+CONNTRACK_MAX="${CONNTRACK_MAX:-65536}"     # conntrack 表上限(每条约 300 字节,65536 ≈ 20MB)
 
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || { echo "需要 root"; exit 1; }
 ok(){ echo -e "\033[32m[OK]\033[0m $*"; }
@@ -51,8 +52,15 @@ chmod +x /etc/letsencrypt/renewal-hooks/deploy/10-reload-onetap.sh
 systemctl enable --now certbot.timer >/dev/null 2>&1 || true
 ok "证书续期钩子就位(续期后自动 reload nginx + restart s-ui)"
 
-# ── 3) 网络调优:fq + BBR + 大缓冲(非破坏,不断连)──────────────────────────
-cat > /etc/sysctl.d/99-onetap.conf <<'EOF'
+# ── 3) 网络调优:fq + BBR + 大缓冲 + conntrack 上限(非破坏,不断连)──────────
+# conntrack:内核按内存自动定上限,1G 小机只有 7680。会员走代理跑一次 CF 优选 IP
+# (几千连接/分钟)就打满 → 内核丢所有新包,hy2(端口跳跃每 30s 新建一条)最先断。
+# 开机先载入模块,否则 systemd-sysctl 跑时 net.netfilter.* 键还不存在,上限静默不生效。
+echo nf_conntrack > /etc/modules-load.d/onetap-conntrack.conf
+echo "options nf_conntrack hashsize=$((CONNTRACK_MAX / 4))" > /etc/modprobe.d/onetap-conntrack.conf
+modprobe nf_conntrack
+echo $((CONNTRACK_MAX / 4)) > /sys/module/nf_conntrack/parameters/hashsize
+cat > /etc/sysctl.d/99-onetap.conf <<EOF
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 net.core.rmem_max = 33554432
@@ -60,12 +68,13 @@ net.core.wmem_max = 33554432
 net.core.rmem_default = 1048576
 net.core.wmem_default = 1048576
 vm.swappiness = 10
+net.netfilter.nf_conntrack_max = ${CONNTRACK_MAX}
 EOF
 sysctl --system >/dev/null 2>&1 || true
 # 当前网卡立即切 fq,不等重启
 IFACE="$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'dev \K\S+' || true)"
 [[ -n "$IFACE" ]] && tc qdisc replace dev "$IFACE" root fq 2>/dev/null || true
-ok "网络调优:qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null) cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+ok "网络调优:qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null) cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) conntrack_max=$(sysctl -n net.netfilter.nf_conntrack_max)"
 
 # ── 3.5) swap:1G 内存的小机没有 swap,s-ui(内嵌 sing-box)内存一冲高就被 OOM 杀,
 #    全部节点跟着断(实际发生过)。有 swap 就不动。
