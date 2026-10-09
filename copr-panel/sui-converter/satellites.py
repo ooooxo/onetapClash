@@ -203,6 +203,10 @@ def _deltas(state, url, usage):
     return out
 
 
+class WritebackRejected(RuntimeError):
+    """调用成功但 s-ui 没把流量写进去(≥1.6)。读数不回滚:重试也写不进,回滚只会在修好后重复扣。"""
+
+
 def _writeback(me, total):
     """把附属节点流量加到本机会员 up/down。editbulk 不带 config:s-ui 从库里补,不触发入站重载。"""
     cur = {c["name"]: c for c in me.get("/load?lu=0").get("clients") or []}
@@ -220,7 +224,7 @@ def _writeback(me, total):
     after = {c["name"]: c for c in me.get("/load?lu=0").get("clients") or []}
     lost = [n for n, w in want.items() if n in after and after[n]["up"] + after[n]["down"] < w]
     if lost:
-        raise RuntimeError(f"本机 s-ui 没接受流量回写({', '.join(lost)}),s-ui ≥1.6 不允许改 up/down")
+        raise WritebackRejected(f"本机 s-ui 没接受流量回写({', '.join(lost)}),s-ui ≥1.6 不允许改 up/down")
 
 
 def _load_traffic():
@@ -274,7 +278,7 @@ def sync_all(log):
         try:
             _writeback(me, total)
         except Exception as e:
-            if not str(e).startswith("本机 s-ui 没接受"):
+            if not isinstance(e, WritebackRejected):
                 _write_traffic(before)
             for s in sats:
                 _status[s["url"]] = {"ok": False, "at": int(time.time()), "msg": f"流量回写失败: {e}"}
