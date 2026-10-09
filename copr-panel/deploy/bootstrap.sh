@@ -171,10 +171,11 @@ _converter(){
   # 没开端口跳跃就不要往订阅里写 ports,否则客户端会往没放行的端口段发包
   HOP_PORTS_EFF=""; [[ "$(lc "$HOP_ENABLE")" != "no" ]] && HOP_PORTS_EFF="$HY2_HOP_PORTS"
   mkdir -p "$CONV_DIR"
-  for f in converter.py users.json rules.json; do
+  for f in converter.py satellites.py users.json rules.json satellites.json satellites.traffic.json; do
     [[ -f "$CONV_DIR/$f" ]] && cp "$CONV_DIR/$f" "$BK/"
   done
   cp ../sui-converter/converter.py       "$CONV_DIR/converter.py"
+  cp ../sui-converter/satellites.py      "$CONV_DIR/satellites.py"
   cp ../sui-converter/rules.default.json "$CONV_DIR/rules.default.json"
   cp ../sui-converter/tencent-cidr.txt   "$CONV_DIR/tencent-cidr.txt"
   if ! "$CONV_DIR/venv/bin/python" -c "import flask,requests,yaml" >/dev/null 2>&1; then
@@ -182,7 +183,7 @@ _converter(){
     rm -rf "$CONV_DIR/venv"; python3 -m venv "$CONV_DIR/venv"
     "$CONV_DIR/venv/bin/pip" install -q -U pip flask requests pyyaml
   fi
-  "$CONV_DIR/venv/bin/python" -m py_compile "$CONV_DIR/converter.py" || die "converter.py 语法失败"
+  "$CONV_DIR/venv/bin/python" -m py_compile "$CONV_DIR/converter.py" "$CONV_DIR/satellites.py" || die "converter 语法失败"
   cat > /etc/systemd/system/sui-converter.service <<EOF
 [Unit]
 Description=onetapclash sui-converter
@@ -198,6 +199,10 @@ Environment=HY2_HOP_INTERVAL=${HY2_HOP_INTERVAL}
 Environment=HY2_UP_MBPS=${HY2_UP_MBPS}
 Environment=HY2_DOWN_MBPS=${HY2_DOWN_MBPS}
 Environment=CLIENT_IPV6=${IPV6}
+# 附属节点(面板「设置 → 附属节点」):配置文件含 s-ui 密码,权限 600;同步时用本机 s-ui API 读会员
+Environment=SATELLITES_FILE=${CONV_DIR}/satellites.json
+Environment=SUI_API=http://${SUI_ADDR}${SUI_BASE%/}/api
+Environment=SUI_HOST=${DOMAIN}
 ExecStart=${CONV_DIR}/venv/bin/python ${CONV_DIR}/converter.py
 Restart=always
 RestartSec=3

@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { store } from '../store'
 import { settings as apiSettings, convRules } from '../api/client'
+import Satellites from '../components/Satellites.vue'
 
 // 全部取真实值:面板设置来自 s-ui /api/settings,converter 状态靠实际请求。
 // 拿不到就显示"读取失败",不编造。
@@ -50,6 +51,7 @@ const v = (k: string, d = '—') => (s.value && s.value[k] !== undefined && s.va
       <div class="kv"><span>会员</span><b>{{ store.members.length }} 人</b></div>
     </div>
   </div>
+  <Satellites style="margin-top:16px" />
 </template>
 <style scoped>
 .kv{display:flex;justify-content:space-between;gap:12px;padding:9px 0;font-size:13px}.kv+.kv{border-top:1px solid var(--hairline)}

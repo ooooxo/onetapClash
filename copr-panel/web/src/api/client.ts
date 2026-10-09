@@ -16,7 +16,11 @@ async function req(base: string, path: string, opts: RequestInit = {}) {
     // 不带则 307 到 /login,nginx 回 200 "OK" 文本,前端分不清
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest', ...(opts.headers || {}) },
   })
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
+  if (!r.ok) {
+    // converter 校验失败回 400 {error:"具体原因"},把原因带给用户而不是只有状态码
+    const err = await r.json().catch(() => null)
+    throw new Error(err?.error || `${r.status} ${r.statusText}`)
+  }
   const ct = r.headers.get('content-type') || ''
   const data = ct.includes('json') ? await r.json() : await r.text()
   if (r.redirected || (data?.success === false && data?.msg === 'Invalid login')) {
@@ -78,3 +82,10 @@ export const save = async (object: string, action: string, data: unknown, initUs
 export const convRules = () => req(CONV, '/admin/rules')
 export const convSetRules = (rules: unknown) =>
   req(CONV, '/admin/rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rules) })
+
+// ---- converter(附属节点:订阅合并 + 会员镜像)----
+const jpost = (path: string, data?: unknown) =>
+  req(CONV, path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data ?? {}) })
+export const convSatellites = () => req(CONV, '/admin/satellites')
+export const convSetSatellites = (cfg: unknown) => jpost('/admin/satellites', cfg)
+export const convSyncSatellites = () => jpost('/admin/satellites/sync')

@@ -10,6 +10,7 @@ from flask import Flask, Response, request, jsonify
 import requests, yaml, json, os, sys, re, base64, binascii, hmac, threading, ipaddress
 from urllib.parse import urlparse, urlsplit, parse_qs, unquote, quote
 from functools import wraps
+import satellites
 
 app = Flask(__name__)
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "")
@@ -345,7 +346,10 @@ def build_dns(direct_domains=None):
     }
 
 
-def build_clash_config(proxies, userinfo, mgmt_domain=None):
+def build_clash_config(proxies, userinfo, mgmt_domain=None, extra=()):
+    # extra = 附属节点的节点:排在本机全部节点之后(自动组里也是),本机挂光了才轮到它们
+    local_ids = {id(p) for p in proxies}
+    proxies = [*proxies, *extra]
     rc = load_rules()
     # 修复前存下的坏 rules.json 在这里直接 500,不下发一份会被 mihomo 整体拒绝的配置
     groups_cfg, final = check_rules(rc)
@@ -390,7 +394,7 @@ def build_clash_config(proxies, userinfo, mgmt_domain=None):
         if p.get("reality-opts"):
             return 1
         return 2
-    auto_order = [p["name"] for p in sorted(proxies, key=prio)]
+    auto_order = [p["name"] for p in sorted(proxies, key=lambda p: (id(p) not in local_ids, prio(p)))]
 
     # 默认 fallback 而不是 url-test:url-test 只比 HTTP 延迟,不看丢包 —— hy2 延迟低但
     # 丢包严重时它依然会选 hy2,用户感受就是"延迟好看但很卡",而且延迟抖动会来回横跳。
@@ -467,7 +471,10 @@ def get_sub(username):
     proxies = extract_proxies(resp.content.decode("utf-8", "replace"))   # 兼容 Clash YAML 与 s-ui 原生 base64 URI
     if not proxies:
         return Response("No proxies found", status=502)
-    return build_clash_config(proxies, resp.headers.get("Subscription-Userinfo", ""), _mgmt_domain(request.host))
+    # 本机节点在前(自动组 fallback 的主节点仍是本机 hy2),附属节点的在后;都按前缀区分
+    satellites.prefix(proxies, (satellites.load().get("local") or {}).get("label", ""))
+    extra = satellites.fetch_proxies(username, extract_proxies, app.logger)
+    return build_clash_config(proxies, resp.headers.get("Subscription-Userinfo", ""), _mgmt_domain(request.host), extra)
 
 
 def _mgmt_domain(host):
@@ -533,10 +540,37 @@ def set_rules():
     return jsonify({"ok": True})
 
 
+@app.route("/admin/satellites", methods=["GET"])
+@require_secret
+def get_satellites():
+    return jsonify(satellites.public_view())
+
+
+@app.route("/admin/satellites", methods=["POST"])
+@require_secret
+def set_satellites():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid satellites"}), 400
+    try:
+        satellites.save(data)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/admin/satellites/sync", methods=["POST"])
+@require_secret
+def sync_satellites():
+    satellites.sync_all(app.logger)
+    return jsonify(satellites.public_view())
+
+
 @app.route("/health")
 def health():
     return jsonify({"ok": True, "users": len(load_users())})
 
 
 if __name__ == "__main__":
+    satellites.start_loop(app.logger)
     app.run(host="127.0.0.1", port=25501)
