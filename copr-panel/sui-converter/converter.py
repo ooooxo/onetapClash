@@ -347,7 +347,7 @@ def build_dns(direct_domains=None):
 
 
 def build_clash_config(proxies, userinfo, mgmt_domain=None, extra=()):
-    # extra = 附属节点的节点:排在本机全部节点之后(自动组里也是),本机挂光了才轮到它们
+    # extra = 附属节点的节点,追加在本机节点之后;自动组里的先后见下方 auto_order
     local_ids = {id(p) for p in proxies}
     proxies = [*proxies, *extra]
     rc = load_rules()
@@ -394,7 +394,13 @@ def build_clash_config(proxies, userinfo, mgmt_domain=None, extra=()):
         if p.get("reality-opts"):
             return 1
         return 2
-    auto_order = [p["name"] for p in sorted(proxies, key=lambda p: (id(p) not in local_ids, prio(p)))]
+    # 默认本机全部节点在前、附属节点在后;面板开了「优先附属节点」则先按协议分档,同档里附属节点在前
+    # (附属快速 → 本机快速 → 附属安全 → 本机安全)。sorted 稳定,同档内保持附属节点的配置顺序
+    if satellites.load().get("prefer_satellites"):
+        key = lambda p: (prio(p), id(p) in local_ids)
+    else:
+        key = lambda p: (id(p) not in local_ids, prio(p))
+    auto_order = [p["name"] for p in sorted(proxies, key=key)]
 
     # 默认 fallback 而不是 url-test:url-test 只比 HTTP 延迟,不看丢包 —— hy2 延迟低但
     # 丢包严重时它依然会选 hy2,用户感受就是"延迟好看但很卡",而且延迟抖动会来回横跳。

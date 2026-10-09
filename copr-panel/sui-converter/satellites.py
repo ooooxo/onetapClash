@@ -53,6 +53,7 @@ def public_view():
         "satellites": [{"label": s["label"], "url": s["url"], "user": s["user"], "has_pass": bool(s.get("pass")),
                         "status": _status.get(s["url"])} for s in d.get("satellites", [])],
         "interval": SYNC_INTERVAL,
+        "prefer_satellites": bool(d.get("prefer_satellites")),
     }
 
 
@@ -82,7 +83,7 @@ def save(new):
             sats.append({"label": label, "url": url, "user": user, "pass": pw})
         if sats and not (loc["user"] and loc["pass"]):
             raise ValueError("有附属节点时必须填本机 s-ui 账号密码(同步要读会员列表)")
-        _write({"local": loc, "satellites": sats})
+        _write({"local": loc, "satellites": sats, "prefer_satellites": bool(new.get("prefer_satellites"))})
 
 
 # ── 订阅合并 ────────────────────────────────────────────────────────────────

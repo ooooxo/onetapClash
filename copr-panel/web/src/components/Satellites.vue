@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { toast } from '../ui'
 import { convSatellites, convSetSatellites, convSyncSatellites } from '../api/client'
 import Icon from './Icon.vue'
+import Switch from './Switch.vue'
 
 // 附属节点:别的服务器上的 onetapclash。会员只在本机管,converter 定时镜像过去,
 // 订阅里追加它的节点(按前缀区分)。密码只写不读:留空 = 沿用已存的。
@@ -10,6 +11,7 @@ interface Sat { label: string; url: string; user: string; pass: string; has_pass
 const local = ref({ label: '', user: '', pass: '', has_pass: false })
 const sats = ref<Sat[]>([])
 const interval = ref(0)
+const prefer = ref(false)
 const loadErr = ref('')
 const busy = ref(false)
 
@@ -17,6 +19,7 @@ function apply(r: any) {
   local.value = { ...r.local, pass: '' }
   sats.value = r.satellites.map((s: any) => ({ ...s, pass: '' }))
   interval.value = r.interval
+  prefer.value = r.prefer_satellites
 }
 onMounted(async () => {
   try { apply(await convSatellites()) } catch (e: any) { loadErr.value = String(e?.message || e) }
@@ -28,7 +31,7 @@ const ago = (t: number) => { const s = Math.round(Date.now() / 1000 - t); return
 async function saveAndSync() {
   busy.value = true
   try {
-    await convSetSatellites({ local: local.value, satellites: sats.value })
+    await convSetSatellites({ local: local.value, satellites: sats.value, prefer_satellites: prefer.value })
     apply(await convSyncSatellites())
     const bad = sats.value.filter(s => s.status && !s.status.ok)
     toast(bad.length ? `已保存,${bad.length} 个附属节点同步失败,见状态` : '已保存并同步 · 客户端更新订阅即生效')
@@ -53,6 +56,7 @@ async function saveAndSync() {
         <div class="fld"><label>s-ui 账号</label><input v-model="local.user" placeholder="同步时读会员列表" /></div>
       </div>
       <div class="fld"><label>s-ui 密码</label><input v-model="local.pass" type="password" :placeholder="local.has_pass ? '已保存,留空不改' : '本机 s-ui 管理员密码'" /></div>
+      <div class="swrow"><div class="tx"><b>自动选择优先附属节点</b><span>开:附属快速 → 本机快速 → 附属安全 → 本机安全;关:本机全部节点在前</span></div><Switch v-model="prefer" /></div>
 
       <div v-for="(s, i) in sats" :key="i" class="sat">
         <div class="ssec">附属节点 {{ i + 1 }}
