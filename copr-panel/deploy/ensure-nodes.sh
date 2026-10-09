@@ -58,7 +58,9 @@ JAR  = f"{E['WORK']}/cookie"
 HOST = E["DOMAIN"]          # s-ui 设了面板域名时,Host 对不上会 403
 
 def curl(args):
-    r = subprocess.run(["curl", "-s", "-b", JAR, "-c", JAR, "-H", f"Host: {HOST}"] + args,
+    # s-ui ≥1.6 的 CSRF 检查:POST 不带 Origin/Referer 时必须有 X-Requested-With,否则一律 403
+    r = subprocess.run(["curl", "-s", "-b", JAR, "-c", JAR, "-H", f"Host: {HOST}",
+                        "-H", "X-Requested-With: XMLHttpRequest"] + args,
                        capture_output=True, text=True)
     return r.stdout
 
