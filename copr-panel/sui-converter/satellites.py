@@ -96,16 +96,20 @@ def prefix(proxies, label):
 
 def fetch_proxies(username, extract, log):
     """各附属节点上同名会员的节点(已加前缀)。单个附属节点失败只记日志,不影响其他。"""
-    out = []
+    out, synced = [], False
     for s in load().get("satellites", []):
         url = f"{s['url']}/get/{urllib.parse.quote(username, safe='')}"
         try:
             r = requests.get(url, timeout=FETCH_TIMEOUT)   # 真证书,校验开着:响应里是会员凭证
+            # 本机会员有效而附属节点 404 = 还没镜像过去(新会员要等最多 SYNC_INTERVAL)。
+            # 客户端拿到不带附属节点的订阅会缓存 12h,所以当场同步一轮再取
+            if r.status_code == 404 and not synced:
+                sync_all(log); synced = True
+                r = requests.get(url, timeout=FETCH_TIMEOUT)
         except requests.RequestException as e:
             log.error("附属节点 %s 订阅拉取失败: %r", s["url"], e)
             continue
         if r.status_code != 200:
-            # 404 = 还没同步到 / 已停用;都不该带它的节点
             log.warning("附属节点 %s 返回 HTTP %s: %s", s["url"], r.status_code, username)
             continue
         out += prefix(extract(r.content.decode("utf-8", "replace")), s["label"])
