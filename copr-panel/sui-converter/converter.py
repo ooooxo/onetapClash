@@ -394,12 +394,11 @@ def build_clash_config(proxies, userinfo, mgmt_domain=None, extra=()):
         if p.get("reality-opts"):
             return 1
         return 2
-    # 默认本机全部节点在前、附属节点在后;面板开了「优先附属节点」则先按协议分档,同档里附属节点在前
-    # (附属快速 → 本机快速 → 附属安全 → 本机安全)。sorted 稳定,同档内保持附属节点的配置顺序
-    if satellites.load().get("prefer_satellites"):
-        key = lambda p: (prio(p), id(p) in local_ids)
-    else:
-        key = lambda p: (id(p) not in local_ids, prio(p))
+    # 先按服务器、再按协议:同一台的快速 → 安全都挂了才换另一台。不能按协议分档交错排(附属快速 → 本机快速
+    # → 附属安全):hy2 一抖 fallback 就换国家,同一会话一会儿美国一会儿日本,OpenAI/Meta 直接判地区不可用。
+    # 默认本机在前;面板开了「优先附属节点」则附属节点在前
+    local_last = bool(satellites.load().get("prefer_satellites"))
+    key = lambda p: ((id(p) in local_ids) == local_last, prio(p))
     auto_order = [p["name"] for p in sorted(proxies, key=key)]
 
     # 默认 fallback 而不是 url-test:url-test 只比 HTTP 延迟,不看丢包 —— hy2 延迟低但
@@ -418,7 +417,9 @@ def build_clash_config(proxies, userinfo, mgmt_domain=None, extra=()):
             else:
                 g["type"] = "fallback"
             return g
-        return {"name": name, "type": "select", "proxies": [*auto_order, "DIRECT"]}
+        # 选择组第一项是自动组 = 默认自动;用户手动点了哪个节点,指向这个组的分流就全走哪个
+        auto = ["♻️ 自动选择"] if "♻️ 自动选择" in groups_cfg else []
+        return {"name": name, "type": "select", "proxies": [*auto, *auto_order, "DIRECT"]}
 
     config = {
         # ipv6=false:服务器只有 IPv4 时,双栈客户端会用原生 IPv6 直连绕过代理→泄漏真实 IPv6。
@@ -440,7 +441,8 @@ def build_clash_config(proxies, userinfo, mgmt_domain=None, extra=()):
         "keep-alive-interval": 15,
         "profile": {"store-selected": True},
         "dns": build_dns([mgmt_domain] if mgmt_domain else None),
-        "proxies": proxies,
+        # 列表顺序同自动组:小火箭只拿节点不用我们的组,默认选第一个 —— 要和 Clash 自动组的首选一致
+        "proxies": sorted(proxies, key=key),
         "proxy-groups": [grp(g) for g in groups_cfg],
         "rules": rules,
     }
@@ -483,7 +485,7 @@ def get_sub(username):
     proxies = extract_proxies(resp.content.decode("utf-8", "replace"))   # 兼容 Clash YAML 与 s-ui 原生 base64 URI
     if not proxies:
         return Response("No proxies found", status=502)
-    # 本机节点在前(自动组 fallback 的主节点仍是本机 hy2),附属节点的在后;都按前缀区分
+    # 本机节点 + 附属节点,按前缀区分;下发顺序由 build_clash_config 按自动组排
     satellites.prefix(proxies, (satellites.load().get("local") or {}).get("label", ""))
     extra = satellites.fetch_proxies(member, extract_proxies, app.logger) if member else []
     return build_clash_config(proxies, resp.headers.get("Subscription-Userinfo", ""), _mgmt_domain(request.host), extra)

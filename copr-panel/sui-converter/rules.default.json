@@ -1,19 +1,19 @@
 {
   "_comment": "模块化分流 2.1 + 防泄漏 — 内联 GEOSITE/GEOIP,mihomo 自带数据、零外部下载、国内可用。顺序=优先级(上=高)。面板可编辑。",
-  "groups": ["♻️ 自动选择", "🚀 手动选择"],
-  "final": "♻️ 自动选择",
+  "groups": ["🚀 手动选择", "♻️ 自动选择"],
+  "final": "🚀 手动选择",
   "modules": [
     { "id": "antileak", "name": "防泄漏(WebRTC/STUN)", "enabled": true, "policy": "REJECT", "geosite": [], "geoip": [],
       "rules": ["DOMAIN-REGEX,(^|\\.)stun[0-9]*\\.,REJECT", "DOMAIN-SUFFIX,stunprotocol.org,REJECT", "DST-PORT,3478,REJECT", "DST-PORT,5349,REJECT", "DST-PORT,19302,REJECT"] },
     { "id": "lan", "name": "局域网直连", "enabled": true, "policy": "DIRECT", "geosite": ["private"], "geoip": ["private"],
       "rules": ["IP-CIDR,127.0.0.0/8,DIRECT,no-resolve", "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve", "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve", "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve", "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve"] },
     { "id": "reject", "name": "广告拦截", "enabled": true, "policy": "REJECT", "geosite": ["category-ads-all"], "geoip": [], "rules": [] },
-    { "id": "googleplay", "name": "Google Play 下载", "enabled": true, "policy": "♻️ 自动选择", "geosite": [], "geoip": [],
-      "rules": ["DOMAIN-SUFFIX,googleapis.cn,♻️ 自动选择", "DOMAIN-SUFFIX,googleapis.com,♻️ 自动选择", "DOMAIN-SUFFIX,xn--ngstr-lra8j.com,♻️ 自动选择", "DOMAIN-SUFFIX,xn--ngstr-cn-8za9o.com,♻️ 自动选择"] },
+    { "id": "googleplay", "name": "Google Play 下载", "enabled": true, "policy": "🚀 手动选择", "geosite": [], "geoip": [],
+      "rules": ["DOMAIN-SUFFIX,googleapis.cn,🚀 手动选择", "DOMAIN-SUFFIX,googleapis.com,🚀 手动选择", "DOMAIN-SUFFIX,xn--ngstr-lra8j.com,🚀 手动选择", "DOMAIN-SUFFIX,xn--ngstr-cn-8za9o.com,🚀 手动选择"] },
     { "id": "cn", "name": "国内直连", "enabled": true, "policy": "DIRECT", "geosite": ["cn"], "geoip": ["CN"], "rules": ["DOMAIN-SUFFIX,cn,DIRECT"] },
-    { "id": "ai", "name": "AI/Claude→自动选择", "enabled": true, "policy": "♻️ 自动选择", "geosite": ["openai"], "geoip": [], "rules": ["DOMAIN-SUFFIX,claude.ai,♻️ 自动选择", "DOMAIN-SUFFIX,anthropic.com,♻️ 自动选择", "DOMAIN-KEYWORD,anthropic,♻️ 自动选择"] },
-    { "id": "telegram", "name": "电报", "enabled": true, "policy": "♻️ 自动选择", "geosite": ["telegram"], "geoip": [], "rules": [] },
-    { "id": "proxy", "name": "国外走代理", "enabled": true, "policy": "♻️ 自动选择", "geosite": ["geolocation-!cn"], "geoip": [], "rules": [] },
+    { "id": "ai", "name": "AI/Claude→代理", "enabled": true, "policy": "🚀 手动选择", "geosite": ["openai"], "geoip": [], "rules": ["DOMAIN-SUFFIX,claude.ai,🚀 手动选择", "DOMAIN-SUFFIX,anthropic.com,🚀 手动选择", "DOMAIN-KEYWORD,anthropic,🚀 手动选择"] },
+    { "id": "telegram", "name": "电报", "enabled": true, "policy": "🚀 手动选择", "geosite": ["telegram"], "geoip": [], "rules": [] },
+    { "id": "proxy", "name": "国外走代理", "enabled": true, "policy": "🚀 手动选择", "geosite": ["geolocation-!cn"], "geoip": [], "rules": [] },
     { "id": "custom", "name": "自定义", "enabled": true, "policy": "🚀 手动选择", "geosite": [], "geoip": [], "rules": [] }
   ]
 }

@@ -56,7 +56,7 @@ async function saveAndSync() {
         <div class="fld"><label>s-ui 账号</label><input v-model="local.user" placeholder="同步时读会员列表" /></div>
       </div>
       <div class="fld"><label>s-ui 密码</label><input v-model="local.pass" type="password" :placeholder="local.has_pass ? '已保存,留空不改' : '本机 s-ui 管理员密码'" /></div>
-      <div class="swrow"><div class="tx"><b>自动选择优先附属节点</b><span>开:附属快速 → 本机快速 → 附属安全 → 本机安全;关:本机全部节点在前</span></div><Switch v-model="prefer" /></div>
+      <div class="swrow"><div class="tx"><b>自动选择优先附属节点</b><span>开:附属快速 → 附属安全 → 本机快速 → 本机安全;关:本机全部节点在前。同一台挂完才换另一台,出口国家不来回跳</span></div><Switch v-model="prefer" /></div>
 
       <div v-for="(s, i) in sats" :key="i" class="sat">
         <div class="ssec">附属节点 {{ i + 1 }}
