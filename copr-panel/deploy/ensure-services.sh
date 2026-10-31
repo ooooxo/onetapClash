@@ -91,6 +91,17 @@ if [[ -z "$(swapon --noheadings)" && "$SWAP_MB" -gt 0 ]]; then
 fi
 ok "swap:$(free -m | awk '/^Swap:/{print $2}')MB"
 
+# ── 3.6) DNS:sing-box 1.14 见 /etc/resolv.conf 开头注释含 "systemd-resolved" 就改走 DBus 问 resolved。
+#    有的 VPS 镜像用 resolvconf,head 模板里留着这行注释,resolved 却没开 → 节点连得上但所有域名
+#    解析失败,TCP/UDP 全断(vpn-am 2026-10-27 重启后发生过)。resolved 真在跑就不动。
+RESOLV_HEAD=/etc/resolvconf/resolv.conf.d/head
+if ! systemctl is-active --quiet systemd-resolved && grep -q systemd-resolved "$RESOLV_HEAD" 2>/dev/null; then
+  sed -i '/systemd-resolved\|resolvectl/d' "$RESOLV_HEAD"
+  resolvconf -u
+  systemctl restart s-ui
+fi
+ok "DNS:resolv.conf 不再误报 systemd-resolved"
+
 # ── 4) 健康看门狗:端口没监听 = 服务其实是死的,systemd 看不出来 ──────────────
 cat > /usr/local/bin/onetap-healthcheck <<EOF
 #!/usr/bin/env bash
