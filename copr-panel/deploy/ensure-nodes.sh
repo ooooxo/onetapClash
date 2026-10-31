@@ -5,7 +5,8 @@
 #   怎么跑: sudo bash ensure-nodes.sh          (读同目录 config.env)
 #   需要什么: s-ui 已在跑、管理员账号密码、域名证书(hy2 用)
 #   已存在同名 tag 不重建;但已有的 hy2 节点会被校正(TLS 换 LE 证书、obfs/拥塞控制对齐配置),
-#   已有的 Reality 节点会被校正握手目标(密钥不变),s-ui 路由补上拦 BT / 拦私网目标两条规则,
+#   已有的 Reality 节点会被校正握手目标(密钥不变),s-ui 路由补上拦 BT / 拦私网目标两条规则、
+#   DNS 为空时补 local + prefer_go(不让 sing-box 按 resolv.conf 注释误走 systemd-resolved),
 #   不走订阅、手工导入分享链接的客户端需要重新导入。可以反复跑。
 #   单独跑时需要 SUI_PASS(环境变量传入,别写进 config.env):SUI_PASS=xxx sudo -E bash ensure-nodes.sh
 # 参数集中在这里:
@@ -246,6 +247,7 @@ if not isinstance(cfg, dict):
     die("取不到 s-ui 的 sing-box 基础配置")
 rules = cfg.setdefault("route", {}).setdefault("rules", [])
 missing = [r for r in HARDEN_RULES if r not in rules]
+changed = []
 if missing:
     if not any(r.get("action") == "sniff" for r in rules):
         rules.insert(0, {"action": "sniff"})
@@ -253,12 +255,24 @@ if missing:
     while at < len(rules) and rules[at].get("action") in ("sniff", "hijack-dns"):
         at += 1
     rules[at:at] = missing
+    changed.append(f"路由加固 {len(missing)} 条(拦 BT、拦私网目标)")
+
+# DNS 不写 = sing-box 用默认 local;1.13 起它见 /etc/resolv.conf 开头注释提到 systemd-resolved
+# 就改走 DBus 问 resolved。有的镜像留着这句注释而 resolved 没开 → 所有域名解析失败,节点连得上
+# 却什么都打不开(vpn-am 2026-10-27)。prefer_go = 只按 resolv.conf 里的 nameserver 自己查。
+# 只有一个 DNS 服务器时 sing-box 默认用它解析出站域名,不用再设 default_domain_resolver。
+servers = cfg.setdefault("dns", {}).setdefault("servers", [])
+if not servers:
+    servers.append({"type": "local", "tag": "local", "prefer_go": True})
+    changed.append("DNS 改为 local + prefer_go")
+
+if changed:
     res = save("config", "set", cfg)
     if res.get("success") is not True:
-        die(f"写入路由加固规则失败: {res.get('msg')}")
-    print(f"[OK] 路由加固:{len(missing)} 条规则已加(拦 BT、拦私网目标)")
+        die(f"写入 s-ui 基础配置失败: {res.get('msg')}")
+    print(f"[OK] s-ui 基础配置:{';'.join(changed)}")
 else:
-    print("[skip] 路由加固规则已存在")
+    print("[skip] 路由加固规则与 DNS 均已就位")
 
 with open(f"{E['WORK']}/ports", "w") as f:
     f.write("\n".join(f"{p}/{proto}" for p, proto in opened))
